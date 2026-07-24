@@ -149,10 +149,14 @@ h3 { font-size: 15px; margin: 0 0 8px; }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  border: none;
+  font-family: inherit;
 }
 .badge-gym { background: #1d3a5f; color: #7dd3fc; }
 .badge-home { background: #1f3d2b; color: #86efac; }
 .badge-both { background: #3d321f; color: #fcd34d; }
+.badge-incomplete { background: var(--bg-card-2); color: var(--text-dim); border: 1px solid var(--border); }
+button.badge { cursor: pointer; }
 
 .warning-banner {
   background: #3d2f10;

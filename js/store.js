@@ -18,6 +18,13 @@ const KEYS = {
   MED_LOG: "myberk_med_log_v1"        // dated "taken" marks for scheduled doses
 };
 
+// Tracks when a download last happened on THIS device. Deliberately kept
+// outside of KEYS (and out of exportAll/importAll) - it should reflect this
+// device's own download history, not get overwritten by whatever timestamp
+// happened to be in a restored backup.
+const LAST_BACKUP_AT_KEY = "myberk_last_backup_at_v1";
+const LAST_CSV_EXPORT_AT_KEY = "myberk_last_csv_export_at_v1";
+
 function uid(prefix) {
   return (prefix || "id") + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
 }
@@ -258,6 +265,21 @@ const Store = {
     entry.durationOverrideMin = minutes;
     writeJSON(KEYS.HISTORY, history);
   },
+  // Marks a history entry as excluded from Summary/CSV/deficit rollups
+  // without deleting it - lets a completion be "undone" reversibly from the
+  // Schedule tab. Entries without this field (the vast majority, including
+  // everything recorded before this feature existed) are treated as
+  // included, so this is fully backward compatible.
+  setHistoryExcluded(id, excluded) {
+    const history = this.getHistory();
+    const entry = history.find((h) => h.id === id);
+    if (!entry) return;
+    entry.excluded = excluded;
+    writeJSON(KEYS.HISTORY, history);
+  },
+  getHistoryEntry(sessionId, dateStr) {
+    return this.getHistory().find((h) => h.sessionId === sessionId && h.date === dateStr) || null;
+  },
 
   // --- Backup / restore (export everything as one JSON snapshot) ---
   // Generic over KEYS so any future store key is automatically included.
@@ -281,6 +303,20 @@ const Store = {
       }
     });
     return true;
+  },
+
+  // --- Last-download timestamps (this device only, see note above) ---
+  getLastBackupAt() {
+    return localStorage.getItem(LAST_BACKUP_AT_KEY);
+  },
+  setLastBackupAt(isoString) {
+    localStorage.setItem(LAST_BACKUP_AT_KEY, isoString);
+  },
+  getLastCsvExportAt() {
+    return localStorage.getItem(LAST_CSV_EXPORT_AT_KEY);
+  },
+  setLastCsvExportAt(isoString) {
+    localStorage.setItem(LAST_CSV_EXPORT_AT_KEY, isoString);
   }
 };
 

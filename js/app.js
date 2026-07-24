@@ -19,7 +19,8 @@ const state = {
   showMedForm: false,        // whether the add/edit medication form is open in Settings
   medFormEditingId: null,    // med id being edited, or null when adding a new one
   medFormTimes: ["08:00"],   // times currently in the med form being built
-  medFormDays: [0, 1, 2, 3, 4, 5, 6] // days currently selected in the med form (default daily)
+  medFormDays: [0, 1, 2, 3, 4, 5, 6], // days currently selected in the med form (default daily)
+  editingSessionDetails: false // whether the start time/duration/location edit form is open in session detail
 };
 
 const root = () => document.getElementById("view-root");
@@ -288,7 +289,7 @@ function todayDietSummary() {
   const eaten = totalCaloriesForDate(dateStr);
   const tdee = computeTDEEForDate(dateStr);
   const workoutBurn = Store.getHistory()
-    .filter((h) => h.date === dateStr)
+    .filter((h) => h.date === dateStr && !h.excluded)
     .reduce((sum, h) => sum + workoutCaloriesBurned(h, Store.getWeightForDate(h.date)), 0);
   const complete = tdee != null;
   const burned = complete ? tdee + workoutBurn : null;
@@ -319,7 +320,7 @@ function getWeekDates() {
 
 function completedToday(sessionId) {
   const key = dateKey(new Date());
-  return Store.getHistory().some((h) => h.sessionId === sessionId && h.date === key);
+  return Store.getHistory().some((h) => h.sessionId === sessionId && h.date === key && !h.excluded);
 }
 
 // ---------- weekly summary ----------
@@ -368,7 +369,7 @@ function weekRange(offsetWeeks) {
 // are intentionally excluded, per spec).
 function weeklySummary(offsetWeeks) {
   const { monday, sunday, mondayKey, sundayKey } = weekRange(offsetWeeks);
-  const entries = Store.getHistory().filter((h) => h.date >= mondayKey && h.date <= sundayKey);
+  const entries = Store.getHistory().filter((h) => h.date >= mondayKey && h.date <= sundayKey && !h.excluded);
 
   let totalMs = 0;
   let gymCount = 0;
@@ -629,8 +630,15 @@ function updateTabBadges() {
 
 // ---------- SETTINGS / BACKUP VIEW ----------
 
+function formatTimestamp(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 function viewSettings() {
   const profile = Store.getProfile();
+  const lastBackupAt = formatTimestamp(Store.getLastBackupAt());
+  const lastCsvExportAt = formatTimestamp(Store.getLastCsvExportAt());
   return `
     <h2>Settings</h2>
 
@@ -679,6 +687,7 @@ function viewSettings() {
         Downloads everything - your schedule, workout history, favorites, saved workouts, and exercise memory - as one file. iPhones can clear app data if you don't open myHealth for a week or two, so keeping a recent backup is worth it. It's also how you can move your data to another device: back up here, then restore that file there.
       </div>
       <button class="btn btn-block" data-action="export-backup">Download backup</button>
+      ${lastBackupAt ? `<div class="session-sub" style="margin-top:8px;">Last downloaded: ${lastBackupAt}</div>` : ""}
     </div>
 
     <h3 class="section-gap">Export daily data for analysis</h3>
@@ -687,6 +696,7 @@ function viewSettings() {
         Downloads a CSV with one row per day - sessions, minutes trained, exercises done, muscles trained, calories burned and eaten, weight, and estimated deficit. Opens in Excel, Numbers, Google Sheets, or any analysis tool. This is a read-only export - it's not used for restoring data (use the backup above for that).
       </div>
       <button class="btn btn-secondary btn-block" data-action="export-analytics-csv">Download CSV</button>
+      ${lastCsvExportAt ? `<div class="session-sub" style="margin-top:8px;">Last downloaded: ${lastCsvExportAt}</div>` : ""}
     </div>
 
     <h3 class="section-gap">Restore from backup</h3>
@@ -702,24 +712,42 @@ function viewSettings() {
   `;
 }
 
+// A non-excluded history entry exists for this session on this exact date.
+// Used both for the Schedule tab's completion indicator and by the toggle
+// handler to decide what tapping it should do next.
+function sessionCompletedOnDate(sessionId, dateStr) {
+  return Store.getHistory().some((h) => h.sessionId === sessionId && h.date === dateStr && !h.excluded);
+}
+
 function viewSchedule() {
   const sessions = Store.getSessions();
   const weekDates = getWeekDates();
+  const todayStr = dateKey(new Date());
 
   const days = DAY_NAMES.map((name, i) => {
     const daySessions = sessions.filter((s) => s.dayOfWeek === i);
-    const dateLabel = weekDates[i].toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const dateForDay = weekDates[i];
+    const dateStrForDay = dateKey(dateForDay);
+    const dateLabel = dateForDay.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const isPastOrToday = dateStrForDay <= todayStr;
 
     const cards = daySessions.map((s) => {
       const conflict = conflictsWithWork(s.dayOfWeek, s.startTime, s.duration);
       const endLabel = minutesToLabel(toMinutes(s.startTime) + Number(s.duration));
+      const completed = sessionCompletedOnDate(s.id, dateStrForDay);
+      const completeToggle = isPastOrToday
+        ? `<button class="badge ${completed ? "badge-home" : "badge-incomplete"}" data-action="toggle-session-complete" data-id="${s.id}" data-date="${dateStrForDay}">${completed ? "✓ Completed" : "Mark complete"}</button>`
+        : "";
       return `
         <div class="card session-card tappable" data-action="open-session" data-id="${s.id}">
           <div class="session-meta">
             <div class="session-time">${minutesToLabel(toMinutes(s.startTime))} – ${endLabel}</div>
             <div class="session-sub">${s.duration} min · ${s.exercises.length} exercise${s.exercises.length === 1 ? "" : "s"}${conflict ? " · ⚠️ overlaps work" : ""}</div>
           </div>
-          ${locationBadge(s.location)}
+          <div class="stack" style="align-items:flex-end;">
+            ${locationBadge(s.location)}
+            ${completeToggle}
+          </div>
         </div>`;
     }).join("");
 
@@ -818,13 +846,40 @@ function viewSessionDetail() {
       </div>`;
   })() : "";
 
+  const editForm = state.editingSessionDetails ? `
+    <div class="card" style="margin-bottom:12px;">
+      <div class="form-field">
+        <label>Start time</label>
+        <select id="edit-session-start">${timeOptions(session.startTime)}</select>
+      </div>
+      <div class="form-field">
+        <label>Duration (minutes)</label>
+        <input id="edit-session-duration" type="number" min="10" step="5" value="${session.duration}">
+      </div>
+      <div class="form-field">
+        <label>Location</label>
+        <select id="edit-session-location">
+          <option value="gym" ${session.location === "gym" ? "selected" : ""}>Gym</option>
+          <option value="home" ${session.location === "home" ? "selected" : ""}>Home</option>
+        </select>
+      </div>
+      <div class="row">
+        <button class="btn" data-action="save-session-edit" data-id="${session.id}">Save</button>
+        <button class="btn btn-secondary" data-action="cancel-session-edit">Cancel</button>
+      </div>
+    </div>` : "";
+
   return `
     <button class="back-link" data-action="switch-view" data-view="schedule">← Back to schedule</button>
     <h2>${DAY_NAMES[session.dayOfWeek]} · ${minutesToLabel(toMinutes(session.startTime))}</h2>
-    <div class="row" style="margin-bottom:12px;">
-      ${locationBadge(session.location)}
-      <span class="session-sub">${session.duration} min · ends ${endLabel}</span>
+    <div class="row-between" style="margin-bottom:12px;">
+      <div class="row">
+        ${locationBadge(session.location)}
+        <span class="session-sub">${session.duration} min · ends ${endLabel}</span>
+      </div>
+      <button class="btn-icon" data-action="toggle-session-edit" aria-label="Edit start time, duration, location">✎</button>
     </div>
+    ${editForm}
     ${conflict ? `<div class="warning-banner">⚠️ This overlaps your 9am–5pm work hours. Kept it anyway since you can override — just flagging it.</div>` : ""}
     <h3>Exercises</h3>
     ${rows || `<div class="empty-state">No exercises yet. Add some from the library, or load a saved workout below.</div>`}
@@ -1053,15 +1108,14 @@ function dietSectionHTML() {
 
   const picker = state.showFoodPicker ? `
     <div class="card" style="margin-top:10px;">
-      <div class="form-field">
-        <input id="food-search" type="search" placeholder="Search common foods…" value="${state.foodQuery.replace(/"/g, "&quot;")}">
-      </div>
       ${savedMeals.length ? `
-        <div class="wrap" style="margin-bottom:10px;">
-          ${savedMeals.map((m) => `<button class="chip" data-action="add-saved-meal" data-id="${m.id}">${m.name} · ${m.calories} kcal</button>`).join("")}
+        <div class="form-field">
+          <label>Saved meals</label>
+          <div class="wrap">
+            ${savedMeals.map((m) => `<button class="chip" data-action="add-saved-meal" data-id="${m.id}">${m.name} · ${m.calories} kcal</button>`).join("")}
+          </div>
         </div>` : ""}
-      <div id="food-results">${foodResultsHTML()}</div>
-      <button class="btn btn-secondary btn-block" style="margin-top:10px;" data-action="toggle-custom-meal-form">${state.showCustomMealForm ? "Cancel" : "+ New custom meal"}</button>
+      <button class="btn btn-secondary btn-block" data-action="toggle-custom-meal-form">${state.showCustomMealForm ? "Cancel" : "+ New custom meal"}</button>
       ${state.showCustomMealForm ? `
         <div class="form-field" style="margin-top:10px;">
           <label>Name</label>
@@ -1073,6 +1127,11 @@ function dietSectionHTML() {
         </div>
         <button class="btn btn-block" data-action="save-custom-meal">Save & add to today</button>
       ` : ""}
+      <div class="form-field" style="margin-top:${savedMeals.length ? "14px" : "0"};">
+        <label>Search common foods</label>
+        <input id="food-search" type="search" placeholder="e.g. cooked egg, coffee…" value="${state.foodQuery.replace(/"/g, "&quot;")}">
+      </div>
+      <div id="food-results">${foodResultsHTML()}</div>
     </div>` : "";
 
   return `
@@ -1173,6 +1232,7 @@ document.addEventListener("click", (e) => {
     state.showCustomMealForm = false;
     state.showMedForm = false;
     state.medFormEditingId = null;
+    state.editingSessionDetails = false;
     render();
   } else if (action === "toggle-add-form") {
     const day = Number(el.dataset.day);
@@ -1184,6 +1244,68 @@ document.addEventListener("click", (e) => {
   } else if (action === "open-session") {
     state.view = "sessionDetail";
     state.openSessionId = el.dataset.id;
+    state.editingSessionDetails = false;
+    render();
+  } else if (action === "toggle-session-complete") {
+    const sessionId = el.dataset.id;
+    const dateStr = el.dataset.date;
+    const existing = Store.getHistoryEntry(sessionId, dateStr);
+    if (existing && !existing.excluded) {
+      // Already completed (from a real check-in or an earlier quick-mark) -
+      // exclude it from Summary/CSV/deficit without deleting the record.
+      Store.setHistoryExcluded(existing.id, true);
+    } else if (existing && existing.excluded) {
+      // Was excluded - re-include it.
+      Store.setHistoryExcluded(existing.id, false);
+    } else {
+      // No record at all yet - quick-complete: log it as done using the
+      // workout's planned exercises/sets/reps and its scheduled duration,
+      // since there's no live check-in data to draw from.
+      const session = Store.getSession(sessionId);
+      if (!session) return;
+      const items = session.exercises.map((row) => ({
+        exerciseId: row.exerciseId,
+        sets: row.targetSets,
+        reps: row.targetReps,
+        weight: row.targetWeight,
+        timeLimitMin: row.targetTimeLimitMin || 0,
+        timeLimitSec: row.targetTimeLimitSec || 0,
+        done: true
+      }));
+      Store.addHistory({
+        id: uid("hist"),
+        sessionId,
+        date: dateStr,
+        location: session.location,
+        startedAt: null,
+        finishedAt: null,
+        durationOverrideMin: session.duration,
+        quickComplete: true,
+        items
+      });
+    }
+    render();
+  } else if (action === "toggle-session-edit") {
+    state.editingSessionDetails = !state.editingSessionDetails;
+    render();
+  } else if (action === "cancel-session-edit") {
+    state.editingSessionDetails = false;
+    render();
+  } else if (action === "save-session-edit") {
+    const session = Store.getSession(el.dataset.id);
+    if (!session) return;
+    const startTime = document.getElementById("edit-session-start").value;
+    const duration = Number(document.getElementById("edit-session-duration").value);
+    const location = document.getElementById("edit-session-location").value;
+    if (!duration || duration < 5) {
+      alert("Enter a valid duration.");
+      return;
+    }
+    session.startTime = startTime;
+    session.duration = duration;
+    session.location = location;
+    Store.upsertSession(session);
+    state.editingSessionDetails = false;
     render();
   } else if (action === "delete-session") {
     if (confirm("Delete this workout?")) {
@@ -1531,6 +1653,9 @@ function exportBackup() {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+  Store.setLastBackupAt(new Date().toISOString());
+  render();
 }
 
 function handleRestoreFile(input) {
@@ -1602,7 +1727,7 @@ function buildDailyAnalyticsRows() {
 
   for (let d = new Date(earliest + "T00:00:00"); dateKey(d) <= today; d.setDate(d.getDate() + 1)) {
     const dStr = dateKey(d);
-    const dayHistory = history.filter((h) => h.date === dStr);
+    const dayHistory = history.filter((h) => h.date === dStr && !h.excluded);
 
     let exercisesCompleted = 0;
     let minutesTrained = 0;
@@ -1662,6 +1787,9 @@ function exportAnalyticsCSV() {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+  Store.setLastCsvExportAt(new Date().toISOString());
+  render();
 }
 
 // ---------- live session lifecycle ----------
