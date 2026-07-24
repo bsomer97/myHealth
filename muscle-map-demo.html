@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myHealth — Muscle Map Demo</title>
+<link rel="stylesheet" href="css/style.css">
+<style>
+  body { padding: 20px; max-width: 480px; margin: 0 auto; }
+  .demo-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .demo-sub { color: var(--text-dim); font-size: 13.5px; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+  <div class="demo-title">Muscle Map</div>
+  <div class="demo-sub">Standalone preview — not wired into the app yet. Just checking the diagram itself looks right.</div>
+
+  <h3>1. Empty diagram (no exercises added)</h3>
+  <div class="card">
+    <div id="empty-map"></div>
+  </div>
+
+  <h3 style="margin-top:20px;">2. Sample workout ("Push Day")</h3>
+  <div class="card">
+    <div class="session-sub" style="margin-bottom:6px;">
+      Bench Press (chest, triceps, shoulders) + Overhead Press (shoulders, triceps) + Tricep Pushdown (triceps, forearms)
+    </div>
+    <div id="sample-map"></div>
+    <div class="muscle-map-legend">
+      <span><span class="swatch" style="background:#f87171;"></span>Primary</span>
+      <span><span class="swatch" style="background:#fbbf24;"></span>Secondary</span>
+      <span><span class="swatch" style="background:#334155;"></span>Untrained</span>
+    </div>
+  </div>
+
+  <h3 style="margin-top:20px;">3. Sample workout ("Leg + Back Day")</h3>
+  <div class="card">
+    <div class="session-sub" style="margin-bottom:6px;">
+      Squat (quadriceps, glutes, hamstrings) + Deadlift (lower back, hamstrings, glutes, traps) + Lat Pulldown (lats, biceps)
+    </div>
+    <div id="sample-map-2"></div>
+    <div class="muscle-map-legend">
+      <span><span class="swatch" style="background:#f87171;"></span>Primary</span>
+      <span><span class="swatch" style="background:#fbbf24;"></span>Secondary</span>
+      <span><span class="swatch" style="background:#334155;"></span>Untrained</span>
+    </div>
+  </div>
+
+  <script type="module" src="js/muscle-map.js"></script>
+  <script type="module">
+    // Wait a tick for muscle-map.js's module evaluation to attach window.MuscleMap.
+    await new Promise((r) => setTimeout(r, 0));
+
+    MuscleMap.render({
+      container: document.getElementById("empty-map"),
+      primaryMuscles: [],
+      secondaryMuscles: []
+    });
+
+    // Bench Press: primary chest/triceps/shoulders. Overhead Press: primary shoulders, secondary triceps.
+    // Tricep Pushdown: primary triceps, secondary forearms.
+    MuscleMap.render({
+      container: document.getElementById("sample-map"),
+      primaryMuscles: ["chest", "triceps", "shoulders", "shoulders", "triceps"],
+      secondaryMuscles: ["shoulders", "triceps", "forearms"]
+    });
+
+    // Squat: primary quadriceps, secondary glutes/hamstrings. Deadlift: primary lower back/hamstrings/glutes, secondary traps.
+    // Lat Pulldown: primary lats, secondary biceps.
+    MuscleMap.render({
+      container: document.getElementById("sample-map-2"),
+      primaryMuscles: ["quadriceps", "lower back", "hamstrings", "glutes", "lats"],
+      secondaryMuscles: ["glutes", "hamstrings", "traps", "biceps"]
+    });
+  </script>
+</body>
+</html>
