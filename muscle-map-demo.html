@@ -27,8 +27,9 @@
     </div>
     <div id="sample-map"></div>
     <div class="muscle-map-legend">
-      <span><span class="swatch" style="background:#f87171;"></span>Primary</span>
-      <span><span class="swatch" style="background:#fbbf24;"></span>Secondary</span>
+      <span><span class="swatch" style="background:#f87171;"></span>High</span>
+      <span><span class="swatch" style="background:#fb923c;"></span>Medium</span>
+      <span><span class="swatch" style="background:#fde047;"></span>Low</span>
       <span><span class="swatch" style="background:#334155;"></span>Untrained</span>
     </div>
   </div>
@@ -40,8 +41,9 @@
     </div>
     <div id="sample-map-2"></div>
     <div class="muscle-map-legend">
-      <span><span class="swatch" style="background:#f87171;"></span>Primary</span>
-      <span><span class="swatch" style="background:#fbbf24;"></span>Secondary</span>
+      <span><span class="swatch" style="background:#f87171;"></span>High</span>
+      <span><span class="swatch" style="background:#fb923c;"></span>Medium</span>
+      <span><span class="swatch" style="background:#fde047;"></span>Low</span>
       <span><span class="swatch" style="background:#334155;"></span>Untrained</span>
     </div>
   </div>
@@ -53,24 +55,36 @@
 
     MuscleMap.render({
       container: document.getElementById("empty-map"),
-      primaryMuscles: [],
-      secondaryMuscles: []
+      muscleTiers: {}
     });
 
-    // Bench Press: primary chest/triceps/shoulders. Overhead Press: primary shoulders, secondary triceps.
-    // Tricep Pushdown: primary triceps, secondary forearms.
+    // Bench Press (compound): chest/triceps/shoulders primary (orange),
+    // Overhead Press (compound): shoulders primary, triceps secondary.
+    // Tricep Pushdown (isolation): triceps primary (red), forearms secondary.
     MuscleMap.render({
       container: document.getElementById("sample-map"),
-      primaryMuscles: ["chest", "triceps", "shoulders", "shoulders", "triceps"],
-      secondaryMuscles: ["shoulders", "triceps", "forearms"]
+      muscleTiers: {
+        chest: "orange",
+        shoulders: "orange",
+        triceps: "red",
+        forearms: "yellow"
+      }
     });
 
-    // Squat: primary quadriceps, secondary glutes/hamstrings. Deadlift: primary lower back/hamstrings/glutes, secondary traps.
-    // Lat Pulldown: primary lats, secondary biceps.
+    // Squat (compound): quads primary, glutes/hamstrings secondary.
+    // Deadlift (compound): lower back/hamstrings/glutes primary, traps secondary.
+    // Lat Pulldown (compound): lats primary, biceps secondary.
     MuscleMap.render({
       container: document.getElementById("sample-map-2"),
-      primaryMuscles: ["quadriceps", "lower back", "hamstrings", "glutes", "lats"],
-      secondaryMuscles: ["glutes", "hamstrings", "traps", "biceps"]
+      muscleTiers: {
+        quadriceps: "orange",
+        "lower back": "orange",
+        hamstrings: "orange",
+        glutes: "orange",
+        lats: "orange",
+        traps: "yellow",
+        biceps: "yellow"
+      }
     });
   </script>
 </body>

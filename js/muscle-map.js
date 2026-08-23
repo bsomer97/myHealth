@@ -2,8 +2,8 @@
 //
 // Wraps the vendored "body-highlighter" library (MIT license, see
 // js/vendor/body-highlighter.LICENSE.txt) to render a front+back body
-// diagram that highlights primary muscles (red) and secondary-only
-// muscles (yellow) for a given workout.
+// diagram colored by INTENSITY TIER (red/orange/yellow/gray), computed by
+// the intensity engine in app.js - NOT by primary/secondary role anymore.
 //
 // This is a native ES module. It exposes window.MuscleMap so the rest of
 // the (non-module) app.js can call it without needing a bundler.
@@ -34,41 +34,55 @@ const MUSCLE_NAME_MAP = {
   triceps: ["triceps"]
 };
 
-const BODY_COLOR = "#334155";     // matches --border, neutral/untrained
-const SECONDARY_COLOR = "#fbbf24"; // matches --warn, yellow
-const PRIMARY_COLOR = "#f87171";   // matches --danger, red
+const TIER_ORDER = ["yellow", "orange", "red"];
 
-function mapMuscleNames(names) {
-  const out = new Set();
-  (names || []).forEach((n) => {
-    const mapped = MUSCLE_NAME_MAP[String(n).toLowerCase()];
-    if (mapped) mapped.forEach((m) => out.add(m));
+const BODY_COLOR = "#334155";    // matches --border, gray = untrained
+const YELLOW_COLOR = "#fde047";  // low intensity
+const ORANGE_COLOR = "#fb923c";  // medium intensity
+const RED_COLOR = "#f87171";     // matches --danger, high intensity
+
+// Builds the highlighter's "data" buckets from a {muscleName: tier} map
+// (tier is "yellow" | "orange" | "red"). Body-highlighter colors a muscle
+// by SUMMING frequency across every bucket it appears in and indexing into
+// highlightedColors - so to get correct "max tier wins" behavior we resolve
+// each muscle to exactly ONE tier (and therefore one bucket) ourselves
+// before calling it, rather than letting the library do any summing.
+function buildBuckets(muscleTiers) {
+  const slugTierIndex = {}; // internal body-highlighter slug -> tier index (0/1/2)
+
+  Object.entries(muscleTiers || {}).forEach(([name, tier]) => {
+    const idx = TIER_ORDER.indexOf(tier);
+    if (idx === -1) return;
+    const mapped = MUSCLE_NAME_MAP[String(name).toLowerCase()];
+    if (!mapped) return;
+    mapped.forEach((slug) => {
+      // Two different source muscles (e.g. "lats" and "middle back") can
+      // map to the same anatomical slug ("upper-back") - take the higher
+      // tier so nothing gets under-colored.
+      if (slugTierIndex[slug] === undefined || idx > slugTierIndex[slug]) {
+        slugTierIndex[slug] = idx;
+      }
+    });
   });
-  return out;
-}
 
-// Builds the two-bucket highlighter dataset described to the user:
-// - a "primary" bucket at frequency 2 -> always resolves to the last
-//   (red) color in highlightedColors
-// - a "secondary" bucket at frequency 1 -> resolves to the first
-//   (yellow) color, but only for muscles not already claimed by primary
-function buildBuckets(primaryMuscleNames, secondaryMuscleNames) {
-  const primary = mapMuscleNames(primaryMuscleNames);
-  const secondaryRaw = mapMuscleNames(secondaryMuscleNames);
-  const secondary = new Set([...secondaryRaw].filter((m) => !primary.has(m)));
+  const buckets = { yellow: [], orange: [], red: [] };
+  Object.entries(slugTierIndex).forEach(([slug, idx]) => {
+    buckets[TIER_ORDER[idx]].push(slug);
+  });
 
   const data = [];
-  if (primary.size) data.push({ name: "primary", muscles: [...primary], frequency: 2 });
-  if (secondary.size) data.push({ name: "secondary", muscles: [...secondary], frequency: 1 });
+  if (buckets.yellow.length) data.push({ name: "yellow", muscles: buckets.yellow, frequency: 1 });
+  if (buckets.orange.length) data.push({ name: "orange", muscles: buckets.orange, frequency: 2 });
+  if (buckets.red.length) data.push({ name: "red", muscles: buckets.red, frequency: 3 });
   return data;
 }
 
-// Renders an empty (or highlighted) front+back diagram pair into `container`.
-// primaryMuscleNames / secondaryMuscleNames use the same vocabulary as
-// data/exercises.json (e.g. "chest", "lats", "lower back").
-// Returns an object with an `update(primaryNames, secondaryNames)` method so
-// callers can refresh the same diagram without rebuilding it.
-function render({ container, primaryMuscles = [], secondaryMuscles = [], size = "normal" }) {
+// Renders an empty (or colored) front+back diagram pair into `container`.
+// muscleTiers uses the same vocabulary as data/exercises.json (e.g.
+// "chest", "lats", "lower back") mapped to "yellow" | "orange" | "red".
+// Returns an object with an `update(muscleTiers)` method so callers can
+// refresh the same diagram without rebuilding it.
+function render({ container, muscleTiers = {}, size = "normal" }) {
   container.innerHTML = "";
 
   const wrap = document.createElement("div");
@@ -92,10 +106,10 @@ function render({ container, primaryMuscles = [], secondaryMuscles = [], size = 
   wrap.appendChild(backHolder);
   container.appendChild(wrap);
 
-  const data = buildBuckets(primaryMuscles, secondaryMuscles);
+  const data = buildBuckets(muscleTiers);
   const sharedOptions = {
     bodyColor: BODY_COLOR,
-    highlightedColors: [SECONDARY_COLOR, PRIMARY_COLOR],
+    highlightedColors: [YELLOW_COLOR, ORANGE_COLOR, RED_COLOR],
     data
   };
 
@@ -113,8 +127,8 @@ function render({ container, primaryMuscles = [], secondaryMuscles = [], size = 
   });
 
   return {
-    update(newPrimary, newSecondary) {
-      const newData = buildBuckets(newPrimary, newSecondary);
+    update(newMuscleTiers) {
+      const newData = buildBuckets(newMuscleTiers);
       front.update({ data: newData });
       back.update({ data: newData });
     },
@@ -125,4 +139,4 @@ function render({ container, primaryMuscles = [], secondaryMuscles = [], size = 
   };
 }
 
-window.MuscleMap = { render, MUSCLE_NAME_MAP, PRIMARY_COLOR, SECONDARY_COLOR, BODY_COLOR };
+window.MuscleMap = { render, MUSCLE_NAME_MAP, YELLOW_COLOR, ORANGE_COLOR, RED_COLOR, BODY_COLOR };

@@ -1,14 +1,73 @@
 // myHealth app logic - single page, view-switching UI. No frameworks.
 
+// Fixed rep choices for the reps dropdown (gym-app improvements: "repetition
+// can be a dropdown"). Cardio exercises don't really have a rep count, so
+// they're pinned to a single "1" option instead of this list.
+const REPS_OPTIONS = [6, 8, 10, 12, 15, 20];
+const CARDIO_REPS_OPTIONS = [1];
+
+// Muscle vocabulary used across the exercise database (matches the keys in
+// muscle-map.js's MUSCLE_NAME_MAP), used to build the Add Exercise form's
+// muscle checkboxes.
+const MUSCLE_LIST = [
+  "abdominals", "abductors", "adductors", "biceps", "calves", "chest",
+  "forearms", "glutes", "hamstrings", "lats", "lower back", "middle back",
+  "neck", "quadriceps", "shoulders", "traps", "triceps"
+];
+
+const EQUIPMENT_OPTIONS = [
+  "barbell", "dumbbell", "machine", "cable", "kettlebells", "bands",
+  "body only", "medicine ball", "exercise ball", "foam roll", "e-z curl bar", "other"
+];
+
+const CATEGORY_TYPES = ["machine", "mat", "weight", "cardio"];
+
+const LBS_TO_KG = 0.45359237;
+
+// Best-guess default categoryType from equipment, offered as a pre-fill in
+// the Add Exercise form (same rule used to derive it for the bundled
+// database) - the user can always override it before saving.
+function guessCategoryType(equipment) {
+  if (equipment === "machine") return "machine";
+  if (["barbell", "dumbbell", "kettlebells", "cable", "bands", "e-z curl bar"].includes(equipment)) return "weight";
+  if (["body only", "exercise ball", "foam roll", "medicine ball"].includes(equipment)) return "mat";
+  return "mat";
+}
+
+function kgLabel(lbs) {
+  const n = Number(lbs);
+  if (!n) return "";
+  return `${(n * LBS_TO_KG).toFixed(1)} kg`;
+}
+
+// Formats a logged/target weight for display, e.g. "135 lbs (single) · 61.2 kg"
+function weightLabel(lbs, handMode) {
+  const n = Number(lbs);
+  if (!n) return "";
+  const hand = handMode === "single" ? " (single hand)" : "";
+  return `${n} lbs${hand} · ${kgLabel(n)}`;
+}
+
+function repsOptionsFor(exercise) {
+  return (exercise && exercise.categoryType === "cardio") ? CARDIO_REPS_OPTIONS : REPS_OPTIONS;
+}
+
+function repsSelectHTML(id, exercise, selected, extraAttrs) {
+  const options = repsOptionsFor(exercise);
+  const opts = options.map((r) => `<option value="${r}" ${Number(selected) === r ? "selected" : ""}>${r}</option>`).join("");
+  return `<select id="${id || ""}" ${extraAttrs || ""}>${opts}</select>`;
+}
+
 const state = {
   view: "schedule",         // schedule | sessionDetail | library | today
   addingForDay: null,       // day index (0-6) currently showing the "add workout" form
   openSessionId: null,      // session id shown in sessionDetail view
   libraryContext: null,     // session id we're adding exercises into, or null for free browsing
   libraryQuery: "",
-  libraryLocation: "all",   // all | gym | home | both
+  libraryCategory: "all",   // all | machine | mat | weight | cardio
   libraryMuscle: "all",
   libraryFavoritesOnly: false,
+  showAddExerciseForm: false, // whether the "Add exercise" form is open in the Library
   pendingAddExercise: null, // exercise id currently being configured (sets/reps/weight) before adding
   expandedExercise: null,   // exercise id expanded to show instructions (free-browse mode)
   showTemplatePicker: false, // whether the "load saved workout" picker is open in session detail
@@ -56,7 +115,7 @@ function topLevelTab() {
 
 function exerciseLabel(row) {
   const parts = [`${row.targetSets || "?"} sets`, `${row.targetReps || "?"} reps`];
-  if (row.targetWeight) parts.push(`${row.targetWeight}`);
+  if (row.targetWeightLbs) parts.push(weightLabel(row.targetWeightLbs, row.targetHandMode));
   const t = timeLimitLabel(row.targetTimeLimitMin, row.targetTimeLimitSec);
   if (t) parts.push(`${t} limit`);
   return parts.join(" · ");
@@ -65,6 +124,23 @@ function exerciseLabel(row) {
 function locationBadge(loc) {
   const cls = loc === "gym" ? "badge-gym" : loc === "home" ? "badge-home" : "badge-both";
   return `<span class="badge ${cls}">${loc}</span>`;
+}
+
+function categoryTypeBadge(categoryType) {
+  if (!categoryType) return `<span class="badge badge-incomplete">uncategorized</span>`;
+  const cls = "badge-cat-" + categoryType;
+  return `<span class="badge ${cls}">${categoryType}</span>`;
+}
+
+function mechanicBadge(mechanic) {
+  if (!mechanic || mechanic === "n/a") return "";
+  return `<span class="badge badge-mechanic-${mechanic}">${mechanic}</span>`;
+}
+
+function tierBadge(tier) {
+  if (!tier) return "";
+  const label = tier === "red" ? "high" : tier === "orange" ? "medium" : "low";
+  return `<span class="badge badge-tier-${tier}">${label} intensity</span>`;
 }
 
 function dateKey(d) {
@@ -85,6 +161,10 @@ function timeOptions(selected) {
 }
 
 function imagePath(rel) {
+  // Custom (user-added) exercises store full image URLs directly, since
+  // there's no bundled photo asset for them - only the static database
+  // uses the "data/images/<folder>/<n>.jpg" relative convention.
+  if (/^https?:\/\//i.test(rel)) return rel;
   return `data/images/${rel}`;
 }
 
@@ -112,28 +192,102 @@ function timeLimitLabel(min, sec) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-// ---------- muscle map helpers ----------
+// ---------- muscle map / intensity engine ----------
 
-// Aggregates primary/secondary muscle names across every exercise in a list
-// of rows (works for both session.exercises and live.items - anything with
-// an exerciseId). Used to feed the whole-workout muscle diagram.
-function collectMuscles(rows) {
-  const primary = [];
-  const secondary = [];
+// Three-tier intensity scale. Order matters (index = severity), used for
+// "max wins" comparisons everywhere a muscle is touched by more than one
+// exercise.
+const TIER_ORDER = ["yellow", "orange", "red"];
+function tierIndex(tier) { return TIER_ORDER.indexOf(tier); }
+function tierAt(index) { return TIER_ORDER[Math.max(0, Math.min(TIER_ORDER.length - 1, index))]; }
+
+// Computes the intensity tier for ONE logged/planned exercise instance, for
+// a given muscle role ("primary" or "secondary").
+//
+// Starts from the exercise's own fixed, curated base tier (ex.primaryTier /
+// ex.secondaryTier - defaulted from compound/isolation in the database, but
+// editable per exercise), then applies simple, explainable upgrade rules:
+//   - reps >= 15 this time            -> +1 tier
+//   - sets >= 4 this time              -> +1 tier
+//   - weight logged is MORE than the   -> +1 tier
+//     last time you did this exact
+//     exercise (progressive overload)
+// Stretching/cardio exercises (mechanic "n/a") are pinned to yellow always -
+// they don't get the upgrade treatment, since they're not building muscle
+// the way a lift is.
+function computeInstanceTier(ex, role, loggedItem, previousWeightLbs) {
+  if (!ex) return "yellow";
+  if (ex.mechanic === "n/a") return "yellow";
+
+  const base = role === "primary" ? (ex.primaryTier || "orange") : (ex.secondaryTier || "yellow");
+  let idx = tierIndex(base);
+  if (idx === -1) idx = tierIndex("orange");
+
+  const reps = Number(loggedItem && loggedItem.reps) || 0;
+  const sets = Number(loggedItem && loggedItem.sets) || 0;
+  const weight = Number(loggedItem && loggedItem.weightLbs) || 0;
+
+  if (reps >= 15) idx += 1;
+  if (sets >= 4) idx += 1;
+  if (weight > 0 && previousWeightLbs && weight > Number(previousWeightLbs)) idx += 1;
+
+  return tierAt(idx);
+}
+
+// Aggregates per-muscle MAX intensity tier across a whole workout (a list
+// of rows shaped like {exerciseId, sets, reps, weightLbs, previousWeightLbs}
+// - works for both session.exercises (target* fields, remapped by the
+// caller) and live.items). Muscles never touched are simply absent from the
+// result, which the muscle map renders as gray/untrained.
+function computeMuscleTiers(rows) {
+  const tiers = {};
   (rows || []).forEach((row) => {
     const ex = Library.byId(row.exerciseId);
     if (!ex) return;
-    primary.push(...(ex.primaryMuscles || []));
-    secondary.push(...(ex.secondaryMuscles || []));
+    const prevWeight = row.previousWeightLbs;
+    (ex.primaryMuscles || []).forEach((m) => {
+      const t = computeInstanceTier(ex, "primary", row, prevWeight);
+      if (tiers[m] === undefined || tierIndex(t) > tierIndex(tiers[m])) tiers[m] = t;
+    });
+    (ex.secondaryMuscles || []).forEach((m) => {
+      const t = computeInstanceTier(ex, "secondary", row, prevWeight);
+      if (tiers[m] === undefined || tierIndex(t) > tierIndex(tiers[m])) tiers[m] = t;
+    });
   });
-  return { primary, secondary };
+  return tiers;
+}
+
+// Normalizes session.exercises rows (target* field names) into the shape
+// computeMuscleTiers expects, pulling in each exercise's last logged weight
+// (fresh, since this is a live preview of a not-yet-started plan) for the
+// progressive-overload check.
+function muscleTiersForPlannedRows(rows) {
+  const normalized = (rows || []).map((row) => {
+    const mem = Store.getExerciseMemory(row.exerciseId);
+    return {
+      exerciseId: row.exerciseId,
+      sets: row.targetSets,
+      reps: row.targetReps,
+      weightLbs: row.targetWeightLbs,
+      previousWeightLbs: mem ? mem.weightLbs : null
+    };
+  });
+  return computeMuscleTiers(normalized);
+}
+
+// Same, but for live.items (already-logged fields) or history items - these
+// carry their own frozen previousWeightLbs snapshot (see startLiveSession),
+// so no memory lookup is needed here.
+function muscleTiersForLoggedRows(rows) {
+  return computeMuscleTiers(rows || []);
 }
 
 function muscleLegendHTML() {
   return `
     <div class="muscle-map-legend">
-      <span><span class="swatch" style="background:#f87171;"></span>Primary</span>
-      <span><span class="swatch" style="background:#fbbf24;"></span>Secondary</span>
+      <span><span class="swatch" style="background:${window.MuscleMap ? window.MuscleMap.RED_COLOR : "#f87171"};"></span>High</span>
+      <span><span class="swatch" style="background:${window.MuscleMap ? window.MuscleMap.ORANGE_COLOR : "#fb923c"};"></span>Medium</span>
+      <span><span class="swatch" style="background:${window.MuscleMap ? window.MuscleMap.YELLOW_COLOR : "#fde047"};"></span>Low</span>
       <span><span class="swatch" style="background:#334155;"></span>Untrained</span>
     </div>`;
 }
@@ -158,8 +312,7 @@ function mountMuscleMaps() {
   if (sessionMapEl) {
     const session = Store.getSession(state.openSessionId);
     if (session) {
-      const { primary, secondary } = collectMuscles(session.exercises);
-      MuscleMap.render({ container: sessionMapEl, primaryMuscles: primary, secondaryMuscles: secondary });
+      MuscleMap.render({ container: sessionMapEl, muscleTiers: muscleTiersForPlannedRows(session.exercises) });
     }
   }
 
@@ -167,21 +320,40 @@ function mountMuscleMaps() {
   if (liveMapEl) {
     const live = Store.getLiveSession();
     if (live) {
-      const { primary, secondary } = collectMuscles(live.items);
-      MuscleMap.render({ container: liveMapEl, primaryMuscles: primary, secondaryMuscles: secondary });
+      MuscleMap.render({ container: liveMapEl, muscleTiers: muscleTiersForLoggedRows(live.items) });
     }
   }
 
   const cfgMapEl = document.getElementById("configure-muscle-map");
   if (cfgMapEl && state.pendingAddExercise) {
     const ex = Library.byId(state.pendingAddExercise);
-    if (ex) MuscleMap.render({ container: cfgMapEl, primaryMuscles: ex.primaryMuscles, secondaryMuscles: ex.secondaryMuscles, size: "small" });
+    if (ex) {
+      // Not-yet-logged single-exercise preview: shows the exercise's fixed
+      // base tier only (no reps/sets/weight upgrade applied yet).
+      const tiers = {};
+      (ex.primaryMuscles || []).forEach((m) => { tiers[m] = ex.primaryTier || "orange"; });
+      (ex.secondaryMuscles || []).forEach((m) => {
+        if (tiers[m] === undefined || tierIndex(ex.secondaryTier || "yellow") > tierIndex(tiers[m])) {
+          tiers[m] = ex.secondaryTier || "yellow";
+        }
+      });
+      MuscleMap.render({ container: cfgMapEl, muscleTiers: tiers, size: "small" });
+    }
   }
 
   const libMapEl = document.getElementById("lib-muscle-map");
   if (libMapEl && state.expandedExercise) {
     const ex = Library.byId(state.expandedExercise);
-    if (ex) MuscleMap.render({ container: libMapEl, primaryMuscles: ex.primaryMuscles, secondaryMuscles: ex.secondaryMuscles, size: "small" });
+    if (ex) {
+      const tiers = {};
+      (ex.primaryMuscles || []).forEach((m) => { tiers[m] = ex.primaryTier || "orange"; });
+      (ex.secondaryMuscles || []).forEach((m) => {
+        if (tiers[m] === undefined || tierIndex(ex.secondaryTier || "yellow") > tierIndex(tiers[m])) {
+          tiers[m] = ex.secondaryTier || "yellow";
+        }
+      });
+      MuscleMap.render({ container: libMapEl, muscleTiers: tiers, size: "small" });
+    }
   }
 }
 
@@ -755,7 +927,7 @@ function viewSchedule() {
       <form class="card" data-action="submit-session-form" data-day="${i}">
         <div class="form-field">
           <label>Start time</label>
-          <select name="startTime">${timeOptions("18:00")}</select>
+          <select name="startTime">${timeOptions("06:30")}</select>
         </div>
         <div class="form-field">
           <label>Duration (minutes)</label>
@@ -909,17 +1081,19 @@ function viewLibrary() {
   })() : "";
 
   const configure = state.pendingAddExercise ? renderConfigurePanel() : "";
+  const addForm = state.showAddExerciseForm ? addExerciseFormHTML() : "";
 
   return `
     <h2>Exercise library</h2>
     ${contextBanner}
     ${configure}
+    ${addForm}
     <div class="form-field">
       <input id="library-search" type="search" placeholder="Search exercises…" value="${state.libraryQuery.replace(/"/g, "&quot;")}">
     </div>
     <div class="wrap" style="margin-bottom:10px;">
-      ${["all", "gym", "home", "both"].map((loc) => `
-        <button class="chip ${state.libraryLocation === loc ? "active" : ""}" data-action="set-lib-location" data-loc="${loc}">${loc}</button>
+      ${["all"].concat(CATEGORY_TYPES).map((cat) => `
+        <button class="chip ${state.libraryCategory === cat ? "active" : ""}" data-action="set-lib-category" data-cat="${cat}">${cat}</button>
       `).join("")}
       <button class="chip ${state.libraryFavoritesOnly ? "active" : ""}" data-action="toggle-favorites-only">★ favorites</button>
     </div>
@@ -929,6 +1103,7 @@ function viewLibrary() {
         ${muscles.map((m) => `<option value="${m}" ${state.libraryMuscle === m ? "selected" : ""}>${m}</option>`).join("")}
       </select>
     </div>
+    ${state.libraryContext ? "" : `<button class="btn btn-secondary btn-block" style="margin-bottom:12px;" data-action="toggle-add-exercise-form">${state.showAddExerciseForm ? "Cancel" : "+ Add exercise to database"}</button>`}
     <div id="library-results"></div>
   `;
 }
@@ -936,12 +1111,78 @@ function viewLibrary() {
 function filteredExercises() {
   const q = state.libraryQuery.trim().toLowerCase();
   return Library.exercises.filter((e) => {
-    if (state.libraryLocation !== "all" && e.location !== state.libraryLocation) return false;
+    if (state.libraryCategory !== "all" && e.categoryType !== state.libraryCategory) return false;
     if (state.libraryMuscle !== "all" && !e.primaryMuscles.includes(state.libraryMuscle)) return false;
     if (state.libraryFavoritesOnly && !Store.isFavorite(e.id)) return false;
     if (q && !e.name.toLowerCase().includes(q)) return false;
     return true;
   });
+}
+
+// ---------- ADD EXERCISE FORM ----------
+
+function addExerciseFormHTML() {
+  const muscleCheckboxes = (groupName) => MUSCLE_LIST.map((m) => `
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400;color:var(--text);margin-bottom:4px;">
+      <input type="checkbox" name="${groupName}" value="${m}" style="width:auto;">${capitalize(m)}
+    </label>`).join("");
+
+  return `
+    <form class="card" id="add-exercise-form" data-action="submit-new-exercise">
+      <h3>Add a new exercise</h3>
+      <div class="form-field">
+        <label>Name</label>
+        <input id="new-ex-name" type="text" required placeholder="e.g. Cable Lateral Raise">
+      </div>
+      <div class="form-field">
+        <label>Equipment</label>
+        <select id="new-ex-equipment">
+          ${EQUIPMENT_OPTIONS.map((eq) => `<option value="${eq}">${eq}</option>`).join("")}
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Category (Machine / Mat / Weight / Cardio)</label>
+        <select id="new-ex-category">
+          ${CATEGORY_TYPES.map((c) => `<option value="${c}">${c}</option>`).join("")}
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Compound or isolation</label>
+        <select id="new-ex-mechanic">
+          <option value="compound">Compound</option>
+          <option value="isolation">Isolation</option>
+          <option value="">Not sure yet</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Primary muscle(s)</label>
+        <div class="stack" style="max-height:160px;overflow-y:auto;background:var(--bg-card-2);border:1px solid var(--border);border-radius:8px;padding:8px;">
+          ${muscleCheckboxes("new-ex-primary")}
+        </div>
+      </div>
+      <div class="form-field">
+        <label>Secondary muscle(s) (optional)</label>
+        <div class="stack" style="max-height:160px;overflow-y:auto;background:var(--bg-card-2);border:1px solid var(--border);border-radius:8px;padding:8px;">
+          ${muscleCheckboxes("new-ex-secondary")}
+        </div>
+      </div>
+      <div class="form-field">
+        <label>Muscle note (optional — e.g. "targets rear delts specifically")</label>
+        <input id="new-ex-muscle-note" type="text" placeholder="optional">
+      </div>
+      <div class="form-field">
+        <label>Instructions (one step per line)</label>
+        <textarea id="new-ex-instructions" rows="4" placeholder="Step 1...&#10;Step 2..."></textarea>
+      </div>
+      <div class="form-field">
+        <label>Image URLs (one per line — paste links to photos you've found)</label>
+        <textarea id="new-ex-images" rows="2" placeholder="https://..."></textarea>
+      </div>
+      <div class="row">
+        <button type="submit" class="btn">Save exercise</button>
+        <button type="button" class="btn btn-secondary" data-action="cancel-add-exercise-form">Cancel</button>
+      </div>
+    </form>`;
 }
 
 function renderLibraryResults() {
@@ -960,7 +1201,9 @@ function renderLibraryResults() {
         ${thumbHTML(e)}
         <div class="lib-text">
           <div class="ex-name">${e.name}</div>
-          <div class="ex-tags">${e.equipment || "no equipment"} · ${e.primaryMuscles.join(", ")} · ${e.location}${count > 0 ? ` · done ${count}×` : ""}</div>
+          <div class="wrap" style="margin:2px 0 4px;">${categoryTypeBadge(e.categoryType)}${mechanicBadge(e.mechanic)}${tierBadge(e.primaryTier)}</div>
+          <div class="ex-tags">${e.equipment || "no equipment"} · ${e.primaryMuscles.join(", ")}${count > 0 ? ` · done ${count}×` : ""}</div>
+          ${e.muscleNote ? `<div class="ex-tags" style="font-style:italic;">${e.muscleNote}</div>` : ""}
           ${expanded ? `${imageGalleryHTML(e)}<div id="lib-muscle-map"></div><div class="instructions"><ol>${e.instructions.map((s) => `<li>${s}</li>`).join("")}</ol></div>` : ""}
         </div>
         <button class="btn-icon" data-action="toggle-favorite" data-id="${e.id}" aria-label="Favorite">${fav ? "★" : "☆"}</button>
@@ -976,8 +1219,9 @@ function renderConfigurePanel() {
   if (!ex) return "";
   const mem = Store.getExerciseMemory(ex.id);
   const sets = mem ? mem.sets : 3;
-  const reps = mem ? mem.reps : 10;
-  const weight = mem ? mem.weight : "";
+  const reps = mem ? mem.reps : (ex.categoryType === "cardio" ? 1 : 10);
+  const weightLbs = mem ? (mem.weightLbs || "") : "";
+  const handMode = mem ? (mem.handMode || "both") : "both";
   const timeMin = mem ? (mem.timeLimitMin || 0) : 0;
   const timeSec = mem ? (mem.timeLimitSec || 0) : 0;
   const memTime = mem ? timeLimitLabel(mem.timeLimitMin, mem.timeLimitSec) : "";
@@ -992,12 +1236,21 @@ function renderConfigurePanel() {
       ${count > 0 ? `<div class="session-sub" style="margin-bottom:8px;">Done ${count} time${count === 1 ? "" : "s"} so far</div>` : ""}
       ${imageGalleryHTML(ex)}
       <div id="configure-muscle-map"></div>
-      ${mem ? `<div class="session-sub" style="margin-bottom:8px;">Last time: ${mem.sets} × ${mem.reps}${mem.weight ? " @ " + mem.weight : ""}${memTime ? " · " + memTime + " limit" : ""}</div>` : ""}
+      ${mem ? `<div class="session-sub" style="margin-bottom:8px;">Last time: ${mem.sets} × ${mem.reps}${mem.weightLbs ? " @ " + weightLabel(mem.weightLbs, mem.handMode) : ""}${memTime ? " · " + memTime + " limit" : ""}</div>` : ""}
       <div class="live-inputs">
         <div class="field"><label>Sets</label><input id="cfg-sets" type="number" min="1" value="${sets}"></div>
-        <div class="field"><label>Reps</label><input id="cfg-reps" type="number" min="1" value="${reps}"></div>
-        <div class="field"><label>Weight (optional)</label><input id="cfg-weight" type="text" value="${weight}" placeholder="e.g. 25kg"></div>
+        <div class="field"><label>Reps</label>${repsSelectHTML("cfg-reps", ex, reps)}</div>
       </div>
+      <div class="live-inputs">
+        <div class="field"><label>Weight (lbs, optional)</label><input id="cfg-weight-lbs" type="number" min="0" step="0.5" value="${weightLbs}" placeholder="e.g. 135" data-weight-lbs-input="cfg-weight-kg"></div>
+        <div class="field"><label>Hands</label>
+          <select id="cfg-hand-mode">
+            <option value="both" ${handMode === "both" ? "selected" : ""}>Both hands / total</option>
+            <option value="single" ${handMode === "single" ? "selected" : ""}>Single hand</option>
+          </select>
+        </div>
+      </div>
+      <div class="session-sub" style="margin:-4px 0 10px;">≈ <span id="cfg-weight-kg">${kgLabel(weightLbs) || "0.0 kg"}</span></div>
       <div class="form-field">
         <label>Time limit (optional — for holds, planks, intervals)</label>
         <div class="time-limit-group">
@@ -1179,15 +1432,25 @@ function viewLiveSession(live) {
   const rows = live.items.map((item, idx) => {
     const ex = Library.byId(item.exerciseId);
     const name = ex ? ex.name : item.exerciseId;
+    const kgSpanId = `live-weight-kg-${idx}`;
     return `
       <div class="live-row ${item.done ? "done" : ""}">
         <div class="ex-name">${idx + 1}. ${name}</div>
         ${imageGalleryHTML(ex)}
         <div class="live-inputs">
           <div class="field"><label>Sets</label><input type="number" min="1" value="${item.sets}" data-live-field="sets" data-index="${idx}"></div>
-          <div class="field"><label>Reps</label><input type="number" min="1" value="${item.reps}" data-live-field="reps" data-index="${idx}"></div>
-          <div class="field"><label>Weight</label><input type="text" value="${item.weight || ""}" data-live-field="weight" data-index="${idx}" placeholder="optional"></div>
+          <div class="field"><label>Reps</label>${repsSelectHTML("", ex, item.reps, `data-live-field="reps" data-index="${idx}"`)}</div>
         </div>
+        <div class="live-inputs">
+          <div class="field"><label>Weight (lbs)</label><input type="number" min="0" step="0.5" value="${item.weightLbs || ""}" data-live-field="weightLbs" data-index="${idx}" placeholder="optional" data-weight-lbs-input="${kgSpanId}"></div>
+          <div class="field"><label>Hands</label>
+            <select data-live-field="handMode" data-index="${idx}">
+              <option value="both" ${item.handMode !== "single" ? "selected" : ""}>Both / total</option>
+              <option value="single" ${item.handMode === "single" ? "selected" : ""}>Single hand</option>
+            </select>
+          </div>
+        </div>
+        <div class="session-sub" style="margin:-4px 0 10px;">≈ <span id="${kgSpanId}">${kgLabel(item.weightLbs) || "0.0 kg"}</span></div>
         <div class="form-field">
           <label>Time limit (optional)</label>
           <div class="time-limit-group">
@@ -1267,7 +1530,8 @@ document.addEventListener("click", (e) => {
         exerciseId: row.exerciseId,
         sets: row.targetSets,
         reps: row.targetReps,
-        weight: row.targetWeight,
+        weightLbs: row.targetWeightLbs,
+        handMode: row.targetHandMode,
         timeLimitMin: row.targetTimeLimitMin || 0,
         timeLimitSec: row.targetTimeLimitSec || 0,
         done: true
@@ -1317,7 +1581,7 @@ document.addEventListener("click", (e) => {
   } else if (action === "open-library-for-session") {
     state.libraryContext = el.dataset.id;
     state.view = "library";
-    state.libraryLocation = "all";
+    state.libraryCategory = "all";
     render();
   } else if (action === "finish-adding") {
     const sessionId = state.libraryContext;
@@ -1326,11 +1590,11 @@ document.addEventListener("click", (e) => {
     state.view = "sessionDetail";
     state.openSessionId = sessionId;
     render();
-  } else if (action === "set-lib-location") {
-    state.libraryLocation = el.dataset.loc;
+  } else if (action === "set-lib-category") {
+    state.libraryCategory = el.dataset.cat;
     renderLibraryResults();
-    document.querySelectorAll('[data-action="set-lib-location"]').forEach((c) => {
-      c.classList.toggle("active", c.dataset.loc === state.libraryLocation);
+    document.querySelectorAll('[data-action="set-lib-category"]').forEach((c) => {
+      c.classList.toggle("active", c.dataset.cat === state.libraryCategory);
     });
   } else if (action === "toggle-library-item") {
     state.expandedExercise = state.expandedExercise === el.dataset.id ? null : el.dataset.id;
@@ -1340,6 +1604,12 @@ document.addEventListener("click", (e) => {
     render();
   } else if (action === "toggle-favorites-only") {
     state.libraryFavoritesOnly = !state.libraryFavoritesOnly;
+    render();
+  } else if (action === "toggle-add-exercise-form") {
+    state.showAddExerciseForm = !state.showAddExerciseForm;
+    render();
+  } else if (action === "cancel-add-exercise-form") {
+    state.showAddExerciseForm = false;
     render();
   } else if (action === "start-add-exercise") {
     state.pendingAddExercise = el.dataset.id;
@@ -1352,7 +1622,8 @@ document.addEventListener("click", (e) => {
     if (session) {
       const sets = Number(document.getElementById("cfg-sets").value) || 1;
       const reps = Number(document.getElementById("cfg-reps").value) || 1;
-      const weight = document.getElementById("cfg-weight").value.trim();
+      const weightLbs = Number(document.getElementById("cfg-weight-lbs").value) || 0;
+      const handMode = document.getElementById("cfg-hand-mode").value;
       const timeMin = Number(document.getElementById("cfg-time-min").value) || 0;
       const timeSec = Number(document.getElementById("cfg-time-sec").value) || 0;
       session.exercises.push({
@@ -1360,7 +1631,8 @@ document.addEventListener("click", (e) => {
         exerciseId: state.pendingAddExercise,
         targetSets: sets,
         targetReps: reps,
-        targetWeight: weight,
+        targetWeightLbs: weightLbs,
+        targetHandMode: handMode,
         targetTimeLimitMin: timeMin,
         targetTimeLimitSec: timeSec
       });
@@ -1598,6 +1870,46 @@ document.addEventListener("submit", (e) => {
     state.view = "sessionDetail";
     state.openSessionId = session.id;
     render();
+  } else if (e.target.id === "add-exercise-form") {
+    e.preventDefault();
+    const form = e.target;
+    const name = document.getElementById("new-ex-name").value.trim();
+    if (!name) return;
+    const equipment = document.getElementById("new-ex-equipment").value;
+    const categoryType = document.getElementById("new-ex-category").value;
+    const mechanic = document.getElementById("new-ex-mechanic").value || null;
+    const muscleNote = document.getElementById("new-ex-muscle-note").value.trim();
+    const primaryMuscles = Array.from(form.querySelectorAll('input[name="new-ex-primary"]:checked')).map((cb) => cb.value);
+    const secondaryMuscles = Array.from(form.querySelectorAll('input[name="new-ex-secondary"]:checked')).map((cb) => cb.value);
+    const instructions = document.getElementById("new-ex-instructions").value.split("\n").map((s) => s.trim()).filter(Boolean);
+    const images = document.getElementById("new-ex-images").value.split("\n").map((s) => s.trim()).filter(Boolean);
+
+    if (primaryMuscles.length === 0) {
+      alert("Pick at least one primary muscle.");
+      return;
+    }
+
+    const exercise = {
+      id: uid("custom"),
+      name,
+      category: "strength",
+      equipment,
+      categoryType,
+      mechanic,
+      primaryTier: mechanic === "isolation" ? "red" : mechanic === "compound" ? "orange" : "yellow",
+      secondaryTier: "yellow",
+      level: "intermediate",
+      primaryMuscles,
+      secondaryMuscles,
+      muscleNote: muscleNote || undefined,
+      instructions: instructions.length ? instructions : ["No instructions added yet."],
+      location: "gym",
+      images,
+      custom: true
+    };
+    Library.addCustom(exercise);
+    state.showAddExerciseForm = false;
+    render();
   }
 });
 
@@ -1612,13 +1924,19 @@ document.addEventListener("input", (e) => {
     renderFoodResults();
     return;
   }
+  // Live kg readout next to any lbs input, updated in place (no full
+  // render) so the field never loses focus mid-type.
+  if (e.target.dataset.weightLbsInput) {
+    const span = document.getElementById(e.target.dataset.weightLbsInput);
+    if (span) span.textContent = kgLabel(e.target.value) || "0.0 kg";
+  }
   if (e.target.dataset.liveField) {
     const live = Store.getLiveSession();
     if (!live) return;
     const idx = Number(e.target.dataset.index);
     const field = e.target.dataset.liveField;
     let val = e.target.value;
-    if (field === "sets" || field === "reps" || field === "timeLimitMin" || field === "timeLimitSec") val = Number(val) || 0;
+    if (field === "sets" || field === "reps" || field === "timeLimitMin" || field === "timeLimitSec" || field === "weightLbs") val = Number(val) || 0;
     live.items[idx][field] = val;
     Store.setLiveSession(live);
   }
@@ -1630,6 +1948,22 @@ document.addEventListener("change", (e) => {
     renderLibraryResults();
   } else if (e.target.id === "restore-file-input") {
     handleRestoreFile(e.target);
+  } else if (e.target.id === "new-ex-equipment") {
+    // Pre-fill the category guess when equipment changes; still fully
+    // editable by the user afterward.
+    const catSelect = document.getElementById("new-ex-category");
+    if (catSelect) catSelect.value = guessCategoryType(e.target.value);
+  } else if (e.target.dataset.liveField) {
+    // Handles <select> fields (reps dropdown, hand-mode) inside the live
+    // session - selects don't reliably fire "input" in every browser.
+    const live = Store.getLiveSession();
+    if (!live) return;
+    const idx = Number(e.target.dataset.index);
+    const field = e.target.dataset.liveField;
+    let val = e.target.value;
+    if (field === "sets" || field === "reps" || field === "timeLimitMin" || field === "timeLimitSec" || field === "weightLbs") val = Number(val) || 0;
+    live.items[idx][field] = val;
+    Store.setLiveSession(live);
   }
 });
 
@@ -1803,10 +2137,16 @@ function startLiveSession(sessionId) {
       exerciseId: row.exerciseId,
       targetSets: row.targetSets,
       targetReps: row.targetReps,
-      targetWeight: row.targetWeight,
+      targetWeightLbs: row.targetWeightLbs,
+      targetHandMode: row.targetHandMode,
       sets: mem ? mem.sets : row.targetSets,
       reps: mem ? mem.reps : row.targetReps,
-      weight: mem ? mem.weight : (row.targetWeight || ""),
+      weightLbs: mem ? mem.weightLbs : (row.targetWeightLbs || ""),
+      handMode: mem ? (mem.handMode || "both") : (row.targetHandMode || "both"),
+      // Frozen snapshot of what was logged last time, taken BEFORE this
+      // session can overwrite that memory - used by the intensity engine's
+      // progressive-overload check ("did you lift more than last time?").
+      previousWeightLbs: mem ? mem.weightLbs : null,
       timeLimitMin: mem ? (mem.timeLimitMin || 0) : (row.targetTimeLimitMin || 0),
       timeLimitSec: mem ? (mem.timeLimitSec || 0) : (row.targetTimeLimitSec || 0),
       done: false
@@ -1844,7 +2184,8 @@ function finishLiveSession() {
     Store.setExerciseMemory(item.exerciseId, {
       sets: item.sets,
       reps: item.reps,
-      weight: item.weight,
+      weightLbs: item.weightLbs,
+      handMode: item.handMode,
       timeLimitMin: item.timeLimitMin || 0,
       timeLimitSec: item.timeLimitSec || 0
     });

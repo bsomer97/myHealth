@@ -8,6 +8,8 @@
   --accent-2: #4ade80;
   --warn: #fbbf24;
   --danger: #f87171;
+  --orange: #fb923c;
+  --yellow: #fde047;
   --border: #334155;
   --radius: 12px;
 }
@@ -157,6 +159,21 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 .badge-both { background: #3d321f; color: #fcd34d; }
 .badge-incomplete { background: var(--bg-card-2); color: var(--text-dim); border: 1px solid var(--border); }
 button.badge { cursor: pointer; }
+
+/* Exercise categoryType badges (Machine / Mat / Weight / Cardio) */
+.badge-cat-machine { background: #1d3a5f; color: #7dd3fc; }
+.badge-cat-mat { background: #1f3d2b; color: #86efac; }
+.badge-cat-weight { background: #3d321f; color: #fcd34d; }
+.badge-cat-cardio { background: #3d1f38; color: #f0abfc; }
+
+/* Compound / isolation badges */
+.badge-mechanic-compound { background: #232f47; color: #93c5fd; }
+.badge-mechanic-isolation { background: #2f2347; color: #c4b5fd; }
+
+/* Base intensity tier badges (what this exercise does to its primary muscle) */
+.badge-tier-red { background: #3b1414; color: #f87171; }
+.badge-tier-orange { background: #3d2a10; color: #fb923c; }
+.badge-tier-yellow { background: #3d3510; color: #fde047; }
 
 .warning-banner {
   background: #3d2f10;
