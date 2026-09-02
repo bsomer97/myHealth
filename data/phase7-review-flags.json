@@ -1,0 +1,223 @@
+{
+  "my_categoryType_judgment_calls": [
+    {
+      "id": "Battling_Ropes",
+      "name": "Battling Ropes",
+      "categoryType": "weight"
+    },
+    {
+      "id": "Hyperextensions_Back_Extensions",
+      "name": "Hyperextensions (Back Extensions)",
+      "categoryType": "machine"
+    },
+    {
+      "id": "Inverted_Row",
+      "name": "Inverted Row",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Inverted_Row_with_Straps",
+      "name": "Inverted Row with Straps",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Kipping_Muscle_Up",
+      "name": "Kipping Muscle Up",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Knee_Hip_Raise_On_Parallel_Bars",
+      "name": "Knee/Hip Raise On Parallel Bars",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Muscle_Up",
+      "name": "Muscle Up",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Otis-Up",
+      "name": "Otis-Up",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Platform_Hamstring_Slides",
+      "name": "Platform Hamstring Slides",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Prone_Manual_Hamstring",
+      "name": "Prone Manual Hamstring",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Rope_Climb",
+      "name": "Rope Climb",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Seated_Head_Harness_Neck_Resistance",
+      "name": "Seated Head Harness Neck Resistance",
+      "categoryType": "weight"
+    },
+    {
+      "id": "Suspended_Fallout",
+      "name": "Suspended Fallout",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Suspended_Row",
+      "name": "Suspended Row",
+      "categoryType": "mat"
+    },
+    {
+      "id": "Svend_Press",
+      "name": "Svend Press",
+      "categoryType": "weight"
+    },
+    {
+      "id": "Trap_Bar_Deadlift",
+      "name": "Trap Bar Deadlift",
+      "categoryType": "weight"
+    },
+    {
+      "id": "Weighted_Pull_Ups",
+      "name": "Weighted Pull Ups",
+      "categoryType": "weight"
+    }
+  ],
+  "my_mechanic_judgment_calls": [
+    {
+      "id": "Carioca_Quick_Step",
+      "name": "Carioca Quick Step",
+      "mechanic": "compound"
+    },
+    {
+      "id": "Double_Kettlebell_Windmill",
+      "name": "Double Kettlebell Windmill",
+      "mechanic": "compound"
+    },
+    {
+      "id": "Kettlebell_Figure_8",
+      "name": "Kettlebell Figure 8",
+      "mechanic": "compound"
+    },
+    {
+      "id": "Kneeling_Arm_Drill",
+      "name": "Kneeling Arm Drill",
+      "mechanic": "compound"
+    },
+    {
+      "id": "Reverse_Hyperextension",
+      "name": "Reverse Hyperextension",
+      "mechanic": "isolation"
+    },
+    {
+      "id": "Side_Bridge",
+      "name": "Side Bridge",
+      "mechanic": "isolation"
+    },
+    {
+      "id": "Single-Cone_Sprint_Drill",
+      "name": "Single-Cone Sprint Drill",
+      "mechanic": "compound"
+    }
+  ],
+  "thin_instructions": [
+    {
+      "id": "Bicycling",
+      "name": "Bicycling",
+      "instructions": [
+        "To begin, seat yourself on the bike and adjust the seat to your height."
+      ]
+    },
+    {
+      "id": "Face_Pull",
+      "name": "Face Pull",
+      "instructions": [
+        "Facing a high pulley with a rope or dual handles attached, pull the weight directly towards your face, separating your hands as you do so. Keep your upper arms parallel to the ground."
+      ]
+    },
+    {
+      "id": "Iron_Cross",
+      "name": "Iron Cross",
+      "instructions": []
+    },
+    {
+      "id": "One-Arm_Kettlebell_Row",
+      "name": "One-Arm Kettlebell Row",
+      "instructions": [
+        "Place a kettlebell in front of your feet. Bend your knees slightly and then push your butt out as much as possible as you bend over to get in the starting position. Grab the kettlebell and pull it to your stomach, retracting your shoulder blade and flexing the elbow. Keep your back straight. Lower and repeat."
+      ]
+    },
+    {
+      "id": "One-Arm_Kettlebell_Swings",
+      "name": "One-Arm Kettlebell Swings",
+      "instructions": []
+    },
+    {
+      "id": "One_Handed_Hang",
+      "name": "One Handed Hang",
+      "instructions": [
+        "Grab onto a chinup bar with one hand, using a pronated grip. Keep your feet on the floor or a step. Allow the majority of your weight to hang from that hand, while keeping your feet on the ground. Hold for 10-20 seconds and switch sides."
+      ]
+    },
+    {
+      "id": "Push_Press",
+      "name": "Push Press",
+      "instructions": []
+    },
+    {
+      "id": "Shoulder_Raise",
+      "name": "Shoulder Raise",
+      "instructions": [
+        "Relax your arms to your sides and raise your shoulders up toward your ears, then back down."
+      ]
+    },
+    {
+      "id": "Shoulder_Stretch",
+      "name": "Shoulder Stretch",
+      "instructions": [
+        "Reach your left arm across your body and hold it straight."
+      ]
+    },
+    {
+      "id": "Side_Bridge",
+      "name": "Side Bridge",
+      "instructions": []
+    },
+    {
+      "id": "Side_Jackknife",
+      "name": "Side Jackknife",
+      "instructions": []
+    },
+    {
+      "id": "Tricep_Side_Stretch",
+      "name": "Tricep Side Stretch",
+      "instructions": [
+        "Bring right arm across your body and over your left shoulder, holding your elbow with your left hand, until you feel a stretch in your tricep. Then repeat for your other arm."
+      ]
+    },
+    {
+      "id": "Triceps_Stretch",
+      "name": "Triceps Stretch",
+      "instructions": [
+        "Reach your hand behind your head, grasp your elbow and gently pull. Hold for 10 to 20 seconds, then switch sides."
+      ]
+    },
+    {
+      "id": "Two-Arm_Kettlebell_Jerk",
+      "name": "Two-Arm Kettlebell Jerk",
+      "instructions": [
+        "Clean two kettlebells to your shoulders. Clean the kettlebells to your shoulders by extending through the legs and hips as you swing the kettlebells towards your shoulders. Rotate your wrists as you do so, so that the palms face forward. Squat down a few inches and reverse the motion rapidly driving both kettlebells overhead. Immediately after the initial push, squat down again and get under the kettlebells. Once the kettlebells are locked out, stand upright to complete the exercise."
+      ]
+    },
+    {
+      "id": "Upper_Back_Stretch",
+      "name": "Upper Back Stretch",
+      "instructions": [
+        "Clasp fingers together with your thumbs pointing down, round your shoulders as you reach your hands forward."
+      ]
+    }
+  ]
+}

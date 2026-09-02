@@ -60,14 +60,20 @@ function repsSelectHTML(id, exercise, selected, extraAttrs) {
 
 const state = {
   view: "schedule",         // schedule | sessionDetail | library | today
-  addingForDay: null,       // day index (0-6) currently showing the "add workout" form
+  addingForDate: null,       // "YYYY-MM-DD" of the day currently showing the "add workout" form
+  scheduleWeekOffset: 0,     // 0 = this week, -1 = last week, 1 = next week, ... (rolling calendar)
   openSessionId: null,      // session id shown in sessionDetail view
   libraryContext: null,     // session id we're adding exercises into, or null for free browsing
   libraryQuery: "",
   libraryCategory: "all",   // all | machine | mat | weight | cardio
+  libraryMechanic: "all",   // all | compound | isolation
   libraryMuscle: "all",
   libraryFavoritesOnly: false,
   showAddExerciseForm: false, // whether the "Add exercise" form is open in the Library
+  libraryMode: "exercises",  // "exercises" | "workouts" - sub-tab within the Library view
+  libraryDraftSessionId: null, // dateless scratch "session" used to build a new saved workout from the Library
+  editingTemplateId: null,   // template id currently showing its rename field
+  lightbox: null,             // { images: [...], index: 0, zoomed: false } or null when closed
   pendingAddExercise: null, // exercise id currently being configured (sets/reps/weight) before adding
   expandedExercise: null,   // exercise id expanded to show instructions (free-browse mode)
   showTemplatePicker: false, // whether the "load saved workout" picker is open in session detail
@@ -104,6 +110,7 @@ function render() {
   if (state.view === "library") renderLibraryResults();
   mountMuscleMaps();
   updateTabBadges();
+  renderLightbox();
 }
 
 function topLevelTab() {
@@ -147,6 +154,16 @@ function dateKey(d) {
   return d.toISOString().slice(0, 10);
 }
 
+// Formats a session's date field ("YYYY-MM-DD") as "Monday · Sep 1" for
+// display in session detail / live session headers.
+function sessionDateLabel(session) {
+  if (!session || !session.date) return "";
+  const d = new Date(session.date + "T00:00:00");
+  const weekday = DAY_NAMES[(d.getDay() + 6) % 7];
+  const md = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${weekday} · ${md}`;
+}
+
 // Builds <option> markup for a 15-minute-increment time dropdown, 12am-11:45pm.
 function timeOptions(selected) {
   let opts = "";
@@ -175,13 +192,41 @@ function exerciseImages(ex) {
 function imageGalleryHTML(ex) {
   const imgs = exerciseImages(ex);
   if (imgs.length === 0) return "";
-  return `<div class="image-gallery">${imgs.map((rel) => `<img src="${imagePath(rel)}" loading="lazy" alt="${ex.name}">`).join("")}</div>`;
+  const imagesAttr = encodeURIComponent(JSON.stringify(imgs));
+  return `<div class="image-gallery">${imgs.map((rel, i) => `<img src="${imagePath(rel)}" loading="lazy" alt="${ex.name}" data-action="open-lightbox" data-images="${imagesAttr}" data-index="${i}">`).join("")}</div>`;
 }
 
 function thumbHTML(ex) {
   const imgs = exerciseImages(ex);
   if (imgs.length === 0) return `<div class="thumb-placeholder">no photo</div>`;
-  return `<img class="lib-thumb" src="${imagePath(imgs[0])}" loading="lazy" alt="${ex.name}">`;
+  const imagesAttr = encodeURIComponent(JSON.stringify(imgs));
+  return `<img class="lib-thumb" src="${imagePath(imgs[0])}" loading="lazy" alt="${ex.name}" data-action="open-lightbox" data-images="${imagesAttr}" data-index="0">`;
+}
+
+// ---------- lightbox (tap-to-zoom/scroll image viewer) ----------
+
+function renderLightbox() {
+  const root = document.getElementById("lightbox-root");
+  if (!root) return;
+  if (!state.lightbox) {
+    root.innerHTML = "";
+    return;
+  }
+  const { images, index, zoomed } = state.lightbox;
+  const src = imagePath(images[index]);
+  root.innerHTML = `
+    <div class="lightbox-overlay">
+      <div class="lightbox-scroll ${zoomed ? "zoomed" : ""}" data-action="toggle-lightbox-zoom">
+        <img class="lightbox-img" src="${src}" alt="">
+      </div>
+      <button class="lightbox-close" data-action="close-lightbox" aria-label="Close">✕</button>
+      ${images.length > 1 ? `
+        <button class="lightbox-nav lightbox-prev" data-action="lightbox-prev" aria-label="Previous">‹</button>
+        <button class="lightbox-nav lightbox-next" data-action="lightbox-next" aria-label="Next">›</button>
+        <div class="lightbox-counter">${index + 1} / ${images.length}</div>
+      ` : ""}
+      <div class="lightbox-hint">${zoomed ? "Tap to zoom out · scroll to pan" : "Tap image to zoom in"}</div>
+    </div>`;
 }
 
 // Formats an optional time limit (minutes + seconds) as "1:05", or "" if unset.
@@ -282,6 +327,33 @@ function muscleTiersForLoggedRows(rows) {
   return computeMuscleTiers(rows || []);
 }
 
+// Per-completed-workout tier rollup, for history entries (Summary tab).
+function tiersForHistoryEntry(h) {
+  return computeMuscleTiers((h && h.items) || []);
+}
+
+// Merges several {muscle: tier} maps into one, "max wins" per muscle -
+// used to roll individual completed sessions up into a weekly view.
+function mergeTiers(tiersList) {
+  const merged = {};
+  (tiersList || []).forEach((tiers) => {
+    Object.entries(tiers || {}).forEach(([m, t]) => {
+      if (merged[m] === undefined || tierIndex(t) > tierIndex(merged[m])) merged[m] = t;
+    });
+  });
+  return merged;
+}
+
+// Small inline badge row showing which muscles a completed session hit at
+// each intensity level, e.g. for a session-history row in the Summary tab.
+function tierBadgeLine(tiers) {
+  return TIER_ORDER.slice().reverse().map((tier) => {
+    const names = Object.entries(tiers || {}).filter(([, t]) => t === tier).map(([m]) => capitalize(m));
+    if (!names.length) return "";
+    return `<span class="badge badge-tier-${tier}">${names.join(", ")}</span>`;
+  }).filter(Boolean).join(" ");
+}
+
 function muscleLegendHTML() {
   return `
     <div class="muscle-map-legend">
@@ -322,6 +394,12 @@ function mountMuscleMaps() {
     if (live) {
       MuscleMap.render({ container: liveMapEl, muscleTiers: muscleTiersForLoggedRows(live.items) });
     }
+  }
+
+  const weeklyMapEl = document.getElementById("weekly-muscle-map");
+  if (weeklyMapEl) {
+    const s = weeklySummary(state.summaryWeekOffset);
+    MuscleMap.render({ container: weeklyMapEl, muscleTiers: s.weeklyTiers });
   }
 
   const cfgMapEl = document.getElementById("configure-muscle-map");
@@ -476,11 +554,11 @@ function todayDietSummary() {
   };
 }
 
-function getWeekDates() {
+function getWeekDates(offsetWeeks) {
   const now = new Date();
   const idx = todayIndex();
   const monday = new Date(now);
-  monday.setDate(now.getDate() - idx);
+  monday.setDate(now.getDate() - idx + (Number(offsetWeeks) || 0) * 7);
   const dates = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(monday);
@@ -547,11 +625,14 @@ function weeklySummary(offsetWeeks) {
   let gymCount = 0;
   let homeCount = 0;
   const muscleCounts = {};
+  const sessionTiers = []; // one {muscle: tier} map per completed session, for weekly rollup
 
   entries.forEach((h) => {
     totalMs += effectiveDurationMs(h);
     if (h.location === "gym") gymCount++;
     else if (h.location === "home") homeCount++;
+
+    sessionTiers.push(tiersForHistoryEntry(h));
 
     (h.items || []).forEach((item) => {
       if (!item.done) return;
@@ -564,6 +645,11 @@ function weeklySummary(offsetWeeks) {
   });
 
   const muscleList = Object.entries(muscleCounts).sort((a, b) => b[1] - a[1]);
+  // Worst-intensity-wins across every session this week - red if any
+  // session hit red for that muscle, else orange if any hit orange, else
+  // yellow if any hit yellow, else the muscle is simply absent (gray/never
+  // worked).
+  const weeklyTiers = mergeTiers(sessionTiers);
 
   // --- weekly calories / deficit rollup (weight resolved per-day, see
   // Store.getWeightForDate, so this stays stable even as more weight
@@ -587,7 +673,7 @@ function weeklySummary(offsetWeeks) {
   const sessionEntries = entries.slice().sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
 
   return {
-    monday, sunday, sessionsCount: entries.length, gymCount, homeCount, totalMs, muscleList,
+    monday, sunday, sessionsCount: entries.length, gymCount, homeCount, totalMs, muscleList, weeklyTiers,
     dietComplete, totalEaten, weeklyBaselineBurn, weeklyWorkoutBurn, weeklyBurned, weeklyDeficit,
     sessionEntries
   };
@@ -596,14 +682,17 @@ function weeklySummary(offsetWeeks) {
 function viewSummary() {
   const s = weeklySummary(state.summaryWeekOffset);
   const rangeLabel = `${s.monday.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${s.sunday.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
-  const maxCount = s.muscleList.length ? s.muscleList[0][1] : 0;
 
-  const muscleRows = s.muscleList.map(([name, count]) => `
-    <div class="summary-muscle-row">
-      <div class="summary-muscle-name">${capitalize(name)}</div>
-      <div class="summary-muscle-bar"><div class="fill" style="width:${maxCount ? Math.round((count / maxCount) * 100) : 0}%"></div></div>
-      <div class="summary-muscle-count">${count}</div>
-    </div>`).join("");
+  const tierGroups = TIER_ORDER.slice().reverse().map((tier) => {
+    const names = Object.entries(s.weeklyTiers).filter(([, t]) => t === tier).map(([m]) => capitalize(m)).sort();
+    if (!names.length) return "";
+    const label = tier === "red" ? "High intensity" : tier === "orange" ? "Medium intensity" : "Low intensity";
+    return `
+      <div class="summary-muscle-row" style="align-items:flex-start;">
+        <div class="badge badge-tier-${tier}" style="flex-shrink:0;">${label}</div>
+        <div class="ex-tags" style="flex:1;">${names.join(", ")}</div>
+      </div>`;
+  }).join("");
 
   const sessionsSub = (s.gymCount || s.homeCount) ? `${s.gymCount} gym, ${s.homeCount} home` : "workouts";
 
@@ -624,20 +713,27 @@ function viewSummary() {
         <div class="session-sub">time trained</div>
       </div>
     </div>
-    <h3>Muscles trained (primary only)</h3>
+
+    <h3>Muscles trained this week</h3>
     <div class="card">
-      ${muscleRows || `<div class="empty-state">No completed workouts this week yet.</div>`}
+      <div id="weekly-muscle-map"></div>
+      ${muscleLegendHTML()}
+    </div>
+    <div class="card">
+      ${tierGroups || `<div class="empty-state">No completed workouts this week yet.</div>`}
     </div>
 
     <h3 class="section-gap">Sessions this week</h3>
     <div class="card">
       ${s.sessionEntries.length ? s.sessionEntries.map((h) => {
         const label = new Date(h.date + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+        const tierLine = tierBadgeLine(tiersForHistoryEntry(h));
         return `
-        <div class="exercise-row">
+        <div class="exercise-row" style="align-items:flex-start;">
           <div class="info">
             <div class="ex-name">${label}${h.location ? " · " + h.location : ""}</div>
             <div class="ex-target">${formatDuration(effectiveDurationMs(h))}${h.durationOverrideMin != null ? " (edited)" : ""}</div>
+            ${tierLine ? `<div class="wrap" style="margin-top:6px;">${tierLine}</div>` : ""}
           </div>
           <button class="btn-icon" data-action="edit-session-duration" data-id="${h.id}" aria-label="Edit duration">✎</button>
         </div>`;
@@ -893,38 +989,45 @@ function sessionCompletedOnDate(sessionId, dateStr) {
 
 function viewSchedule() {
   const sessions = Store.getSessions();
-  const weekDates = getWeekDates();
+  const weekDates = getWeekDates(state.scheduleWeekOffset);
   const todayStr = dateKey(new Date());
+  const monday = weekDates[0];
+  const sunday = weekDates[6];
+  const rangeLabel = `${monday.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${sunday.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
 
   const days = DAY_NAMES.map((name, i) => {
-    const daySessions = sessions.filter((s) => s.dayOfWeek === i);
     const dateForDay = weekDates[i];
     const dateStrForDay = dateKey(dateForDay);
+    const daySessions = sessions.filter((s) => s.date === dateStrForDay);
     const dateLabel = dateForDay.toLocaleDateString(undefined, { month: "short", day: "numeric" });
     const isPastOrToday = dateStrForDay <= todayStr;
+    const isToday = dateStrForDay === todayStr;
 
     const cards = daySessions.map((s) => {
-      const conflict = conflictsWithWork(s.dayOfWeek, s.startTime, s.duration);
+      const conflict = conflictsWithWork(s.date, s.startTime, s.duration);
       const endLabel = minutesToLabel(toMinutes(s.startTime) + Number(s.duration));
       const completed = sessionCompletedOnDate(s.id, dateStrForDay);
       const completeToggle = isPastOrToday
         ? `<button class="badge ${completed ? "badge-home" : "badge-incomplete"}" data-action="toggle-session-complete" data-id="${s.id}" data-date="${dateStrForDay}">${completed ? "✓ Completed" : "Mark complete"}</button>`
         : "";
       return `
-        <div class="card session-card tappable" data-action="open-session" data-id="${s.id}">
-          <div class="session-meta">
-            <div class="session-time">${minutesToLabel(toMinutes(s.startTime))} – ${endLabel}</div>
-            <div class="session-sub">${s.duration} min · ${s.exercises.length} exercise${s.exercises.length === 1 ? "" : "s"}${conflict ? " · ⚠️ overlaps work" : ""}</div>
+        <div class="card session-card">
+          <div class="tappable" data-action="open-session" data-id="${s.id}" style="flex:1;display:flex;justify-content:space-between;align-items:center;">
+            <div class="session-meta">
+              <div class="session-time">${minutesToLabel(toMinutes(s.startTime))} – ${endLabel}</div>
+              <div class="session-sub">${s.duration} min · ${s.exercises.length} exercise${s.exercises.length === 1 ? "" : "s"}${conflict ? " · ⚠️ overlaps work" : ""}</div>
+            </div>
+            <div class="stack" style="align-items:flex-end;">
+              ${locationBadge(s.location)}
+              ${completeToggle}
+            </div>
           </div>
-          <div class="stack" style="align-items:flex-end;">
-            ${locationBadge(s.location)}
-            ${completeToggle}
-          </div>
+          <button class="btn-icon" data-action="duplicate-session-next-week" data-id="${s.id}" aria-label="Duplicate to next week" title="Duplicate to next week">⧉</button>
         </div>`;
     }).join("");
 
-    const addForm = state.addingForDay === i ? `
-      <form class="card" data-action="submit-session-form" data-day="${i}">
+    const addForm = state.addingForDate === dateStrForDay ? `
+      <form class="card" data-action="submit-session-form" data-date="${dateStrForDay}">
         <div class="form-field">
           <label>Start time</label>
           <select name="startTime">${timeOptions("06:30")}</select>
@@ -950,17 +1053,24 @@ function viewSchedule() {
       <section class="day-section">
         <div class="day-header">
           <div>
-            <span class="day-title">${name}</span>
+            <span class="day-title">${name}${isToday ? " · Today" : ""}</span>
             <span class="day-subtitle"> · ${dateLabel}</span>
           </div>
-          ${state.addingForDay === i ? "" : `<button class="btn btn-secondary btn-sm" data-action="toggle-add-form" data-day="${i}">+ Add</button>`}
+          ${state.addingForDate === dateStrForDay ? "" : `<button class="btn btn-secondary btn-sm" data-action="toggle-add-form" data-date="${dateStrForDay}">+ Add</button>`}
         </div>
-        ${cards || (state.addingForDay === i ? "" : `<div class="session-sub">No workout scheduled</div>`)}
+        ${cards || (state.addingForDate === dateStrForDay ? "" : `<div class="session-sub">No workout scheduled</div>`)}
         ${addForm}
       </section>`;
   }).join("");
 
-  return `<h2>This week</h2>${days}`;
+  return `
+    <div class="summary-header">
+      <button class="btn-icon" data-action="schedule-week" data-dir="-1">‹</button>
+      <h2>${state.scheduleWeekOffset === 0 ? "This week" : state.scheduleWeekOffset === 1 ? "Next week" : state.scheduleWeekOffset === -1 ? "Last week" : "Week of " + monday.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</h2>
+      <button class="btn-icon" data-action="schedule-week" data-dir="1">›</button>
+    </div>
+    <div class="summary-range">${rangeLabel} (Mon–Sun)</div>
+    ${days}`;
 }
 
 // ---------- SESSION DETAIL VIEW ----------
@@ -971,7 +1081,7 @@ function viewSessionDetail() {
     return `<button class="back-link" data-action="switch-view" data-view="schedule">← Back</button>
       <div class="empty-state">Workout not found.</div>`;
   }
-  const conflict = conflictsWithWork(session.dayOfWeek, session.startTime, session.duration);
+  const conflict = conflictsWithWork(session.date, session.startTime, session.duration);
   const endLabel = minutesToLabel(toMinutes(session.startTime) + Number(session.duration));
 
   const rows = session.exercises.map((row, idx) => {
@@ -1043,7 +1153,7 @@ function viewSessionDetail() {
 
   return `
     <button class="back-link" data-action="switch-view" data-view="schedule">← Back to schedule</button>
-    <h2>${DAY_NAMES[session.dayOfWeek]} · ${minutesToLabel(toMinutes(session.startTime))}</h2>
+    <h2>${sessionDateLabel(session)} · ${minutesToLabel(toMinutes(session.startTime))}</h2>
     <div class="row-between" style="margin-bottom:12px;">
       <div class="row">
         ${locationBadge(session.location)}
@@ -1071,20 +1181,52 @@ function viewSessionDetail() {
 function viewLibrary() {
   const muscles = Array.from(new Set(Library.exercises.flatMap((e) => e.primaryMuscles))).sort();
 
-  const contextBanner = state.libraryContext ? (() => {
-    const s = Store.getSession(state.libraryContext);
+  // Building a new saved workout from the Library uses a dateless scratch
+  // "session" behind the scenes, so it can reuse the exact same
+  // add-exercise flow as a real scheduled workout - it's just never shown
+  // on the Schedule tab (nothing ever filters sessions by a null date) and
+  // gets deleted (or turned into a template) when you're done.
+  const draftMode = !!state.libraryDraftSessionId;
+
+  const contextBanner = (state.libraryContext || draftMode) ? (() => {
+    const sid = state.libraryContext || state.libraryDraftSessionId;
+    const s = Store.getSession(sid);
     if (!s) return "";
+    if (draftMode) {
+      return `<div class="warning-banner" style="background:#132a3d;border-color:var(--accent);color:#bae6fd;">
+        Building a new saved workout (${s.exercises.length} exercise${s.exercises.length === 1 ? "" : "s"} so far).
+        <div class="form-field" style="margin-top:8px;">
+          <input id="draft-workout-name" type="text" placeholder="Name this workout…">
+        </div>
+        <div class="row">
+          <button class="btn btn-sm" data-action="save-draft-workout">Save workout</button>
+          <button class="btn btn-secondary btn-sm" data-action="discard-draft-workout">Discard</button>
+        </div>
+      </div>`;
+    }
     return `<div class="warning-banner" style="background:#132a3d;border-color:var(--accent);color:#bae6fd;">
-      Adding exercises to your ${DAY_NAMES[s.dayOfWeek]} ${minutesToLabel(toMinutes(s.startTime))} workout.
+      Adding exercises to your ${sessionDateLabel(s)} ${minutesToLabel(toMinutes(s.startTime))} workout.
       <button class="btn btn-secondary btn-sm" data-action="finish-adding" style="margin-top:8px;">Done adding</button>
     </div>`;
   })() : "";
+
+  const showModeToggle = !state.libraryContext && !draftMode;
+  const modeToggle = showModeToggle ? `
+    <div class="wrap" style="margin-bottom:12px;">
+      <button class="chip ${state.libraryMode === "exercises" ? "active" : ""}" data-action="set-lib-mode" data-mode="exercises">Exercises</button>
+      <button class="chip ${state.libraryMode === "workouts" ? "active" : ""}" data-action="set-lib-mode" data-mode="workouts">My workouts</button>
+    </div>` : "";
+
+  if (showModeToggle && state.libraryMode === "workouts") {
+    return `<h2>Exercise library</h2>${modeToggle}${workoutLibraryHTML()}`;
+  }
 
   const configure = state.pendingAddExercise ? renderConfigurePanel() : "";
   const addForm = state.showAddExerciseForm ? addExerciseFormHTML() : "";
 
   return `
     <h2>Exercise library</h2>
+    ${modeToggle}
     ${contextBanner}
     ${configure}
     ${addForm}
@@ -1097,14 +1239,56 @@ function viewLibrary() {
       `).join("")}
       <button class="chip ${state.libraryFavoritesOnly ? "active" : ""}" data-action="toggle-favorites-only">★ favorites</button>
     </div>
+    <div class="wrap" style="margin-bottom:10px;">
+      ${["all", "compound", "isolation"].map((mech) => `
+        <button class="chip ${state.libraryMechanic === mech ? "active" : ""}" data-action="set-lib-mechanic" data-mech="${mech}">${mech}</button>
+      `).join("")}
+    </div>
     <div class="form-field">
       <select id="muscle-filter">
         <option value="all" ${state.libraryMuscle === "all" ? "selected" : ""}>All muscle groups</option>
         ${muscles.map((m) => `<option value="${m}" ${state.libraryMuscle === m ? "selected" : ""}>${m}</option>`).join("")}
       </select>
     </div>
-    ${state.libraryContext ? "" : `<button class="btn btn-secondary btn-block" style="margin-bottom:12px;" data-action="toggle-add-exercise-form">${state.showAddExerciseForm ? "Cancel" : "+ Add exercise to database"}</button>`}
+    ${(state.libraryContext || draftMode) ? "" : `<button class="btn btn-secondary btn-block" style="margin-bottom:12px;" data-action="toggle-add-exercise-form">${state.showAddExerciseForm ? "Cancel" : "+ Add exercise to database"}</button>`}
     <div id="library-results"></div>
+  `;
+}
+
+// ---------- WORKOUT LIBRARY (saved workout templates: browse/rename/delete) ----------
+
+function workoutLibraryHTML() {
+  const templates = Store.getTemplates();
+  const rows = templates.map((t) => {
+    const editing = state.editingTemplateId === t.id;
+    if (editing) {
+      return `
+        <div class="lib-item" style="align-items:center;">
+          <div class="lib-text">
+            <input id="rename-template-input" type="text" value="${t.name.replace(/"/g, "&quot;")}" style="margin-bottom:6px;">
+            <div class="row">
+              <button class="btn btn-sm" data-action="confirm-rename-template" data-id="${t.id}">Save</button>
+              <button class="btn btn-secondary btn-sm" data-action="cancel-rename-template">Cancel</button>
+            </div>
+          </div>
+        </div>`;
+    }
+    return `
+      <div class="lib-item" style="align-items:center;">
+        <div class="lib-text">
+          <div class="ex-name">${t.name}</div>
+          <div class="ex-tags">${t.exercises.length} exercise${t.exercises.length === 1 ? "" : "s"}</div>
+        </div>
+        <div class="stack">
+          <button class="btn-icon" data-action="start-rename-template" data-id="${t.id}" aria-label="Rename">✎</button>
+          <button class="btn-icon" data-action="delete-template" data-id="${t.id}" aria-label="Delete">✕</button>
+        </div>
+      </div>`;
+  }).join("");
+
+  return `
+    <button class="btn btn-block" style="margin-bottom:14px;" data-action="new-workout-from-library">+ Build a new workout</button>
+    ${templates.length ? rows : `<div class="empty-state">No saved workouts yet. Build one, or save one from an existing scheduled workout's detail page.</div>`}
   `;
 }
 
@@ -1112,6 +1296,7 @@ function filteredExercises() {
   const q = state.libraryQuery.trim().toLowerCase();
   return Library.exercises.filter((e) => {
     if (state.libraryCategory !== "all" && e.categoryType !== state.libraryCategory) return false;
+    if (state.libraryMechanic !== "all" && e.mechanic !== state.libraryMechanic) return false;
     if (state.libraryMuscle !== "all" && !e.primaryMuscles.includes(state.libraryMuscle)) return false;
     if (state.libraryFavoritesOnly && !Store.isFavorite(e.id)) return false;
     if (q && !e.name.toLowerCase().includes(q)) return false;
@@ -1192,8 +1377,8 @@ function renderLibraryResults() {
   const shown = results.slice(0, 50);
 
   container.innerHTML = shown.map((e) => {
-    const tappable = state.libraryContext ? `data-action="start-add-exercise" data-id="${e.id}"` : `data-action="toggle-library-item" data-id="${e.id}"`;
-    const expanded = state.expandedExercise === e.id && !state.libraryContext;
+    const tappable = (state.libraryContext || state.libraryDraftSessionId) ? `data-action="start-add-exercise" data-id="${e.id}"` : `data-action="toggle-library-item" data-id="${e.id}"`;
+    const expanded = state.expandedExercise === e.id && !state.libraryContext && !state.libraryDraftSessionId;
     const fav = Store.isFavorite(e.id);
     const count = Store.getCount(e.id);
     return `
@@ -1274,7 +1459,8 @@ function viewToday() {
   if (live) return medsSectionHTML() + viewLiveSession(live) + weightSectionHTML() + dietSectionHTML();
 
   const today = todayIndex();
-  const sessions = Store.getSessions().filter((s) => s.dayOfWeek === today);
+  const todayStr = dateKey(new Date());
+  const sessions = Store.getSessions().filter((s) => s.date === todayStr);
 
   if (sessions.length === 0) {
     return `<h2>Today · ${DAY_NAMES[today]}</h2>${medsSectionHTML()}<div class="empty-state">No workout scheduled today.<br>Add one from the Schedule tab.</div>${weightSectionHTML()}${dietSectionHTML()}`;
@@ -1465,7 +1651,7 @@ function viewLiveSession(live) {
   }).join("");
 
   return `
-    <h2>${session ? DAY_NAMES[session.dayOfWeek] + " workout" : "Workout"} · in progress</h2>
+    <h2>${session ? sessionDateLabel(session) + " workout" : "Workout"} · in progress</h2>
     <div class="progress-bar"><div class="fill" style="width:${pct}%"></div></div>
     <div class="session-sub" style="margin-bottom:14px;">${doneCount} of ${total} done</div>
     ${total > 0 ? muscleMapCardHTML("live-muscle-map", "Muscles worked") : ""}
@@ -1484,6 +1670,39 @@ document.addEventListener("click", (e) => {
   if (!el) return;
   const action = el.dataset.action;
 
+  if (action === "open-lightbox") {
+    let images = [];
+    try { images = JSON.parse(decodeURIComponent(el.dataset.images)); } catch (err) { images = []; }
+    if (!images.length) return;
+    state.lightbox = { images, index: Number(el.dataset.index) || 0, zoomed: false };
+    renderLightbox();
+    return;
+  } else if (action === "close-lightbox") {
+    state.lightbox = null;
+    renderLightbox();
+    return;
+  } else if (action === "toggle-lightbox-zoom") {
+    if (state.lightbox) {
+      state.lightbox.zoomed = !state.lightbox.zoomed;
+      renderLightbox();
+    }
+    return;
+  } else if (action === "lightbox-prev") {
+    if (state.lightbox) {
+      state.lightbox.index = (state.lightbox.index - 1 + state.lightbox.images.length) % state.lightbox.images.length;
+      state.lightbox.zoomed = false;
+      renderLightbox();
+    }
+    return;
+  } else if (action === "lightbox-next") {
+    if (state.lightbox) {
+      state.lightbox.index = (state.lightbox.index + 1) % state.lightbox.images.length;
+      state.lightbox.zoomed = false;
+      renderLightbox();
+    }
+    return;
+  }
+
   if (action === "switch-view") {
     state.view = el.dataset.view;
     state.openSessionId = null;
@@ -1498,12 +1717,31 @@ document.addEventListener("click", (e) => {
     state.editingSessionDetails = false;
     render();
   } else if (action === "toggle-add-form") {
-    const day = Number(el.dataset.day);
-    state.addingForDay = state.addingForDay === day ? null : day;
+    const date = el.dataset.date;
+    state.addingForDate = state.addingForDate === date ? null : date;
     render();
   } else if (action === "cancel-add-form") {
-    state.addingForDay = null;
+    state.addingForDate = null;
     render();
+  } else if (action === "schedule-week") {
+    state.scheduleWeekOffset += Number(el.dataset.dir);
+    render();
+  } else if (action === "duplicate-session-next-week") {
+    const src = Store.getSession(el.dataset.id);
+    if (src) {
+      const d = new Date(src.date + "T00:00:00");
+      d.setDate(d.getDate() + 7);
+      const copy = {
+        id: uid("session"),
+        date: dateKey(d),
+        startTime: src.startTime,
+        duration: src.duration,
+        location: src.location,
+        exercises: JSON.parse(JSON.stringify(src.exercises))
+      };
+      Store.upsertSession(copy);
+      render();
+    }
   } else if (action === "open-session") {
     state.view = "sessionDetail";
     state.openSessionId = el.dataset.id;
@@ -1596,6 +1834,65 @@ document.addEventListener("click", (e) => {
     document.querySelectorAll('[data-action="set-lib-category"]').forEach((c) => {
       c.classList.toggle("active", c.dataset.cat === state.libraryCategory);
     });
+  } else if (action === "set-lib-mechanic") {
+    state.libraryMechanic = el.dataset.mech;
+    renderLibraryResults();
+    document.querySelectorAll('[data-action="set-lib-mechanic"]').forEach((c) => {
+      c.classList.toggle("active", c.dataset.mech === state.libraryMechanic);
+    });
+  } else if (action === "set-lib-mode") {
+    state.libraryMode = el.dataset.mode;
+    render();
+  } else if (action === "new-workout-from-library") {
+    const draft = {
+      id: uid("session"),
+      date: null, // never shown on the Schedule tab - a scratch object only
+      startTime: "00:00",
+      duration: 0,
+      location: "gym",
+      exercises: []
+    };
+    Store.upsertSession(draft);
+    state.libraryDraftSessionId = draft.id;
+    render();
+  } else if (action === "save-draft-workout") {
+    const session = Store.getSession(state.libraryDraftSessionId);
+    const nameInput = document.getElementById("draft-workout-name");
+    const name = nameInput ? nameInput.value.trim() : "";
+    if (!name) {
+      alert("Give this workout a name first.");
+      return;
+    }
+    if (session && session.exercises.length > 0) {
+      Store.addTemplate({ id: uid("tpl"), name, exercises: session.exercises });
+    }
+    if (session) Store.deleteSession(session.id);
+    state.libraryDraftSessionId = null;
+    state.pendingAddExercise = null;
+    state.libraryMode = "workouts";
+    render();
+  } else if (action === "discard-draft-workout") {
+    if (state.libraryDraftSessionId) Store.deleteSession(state.libraryDraftSessionId);
+    state.libraryDraftSessionId = null;
+    state.pendingAddExercise = null;
+    state.libraryMode = "workouts";
+    render();
+  } else if (action === "start-rename-template") {
+    state.editingTemplateId = el.dataset.id;
+    render();
+  } else if (action === "cancel-rename-template") {
+    state.editingTemplateId = null;
+    render();
+  } else if (action === "confirm-rename-template") {
+    const input = document.getElementById("rename-template-input");
+    const name = input ? input.value.trim() : "";
+    const template = Store.getTemplates().find((t) => t.id === el.dataset.id);
+    if (template && name) {
+      template.name = name;
+      Store.updateTemplate(template);
+    }
+    state.editingTemplateId = null;
+    render();
   } else if (action === "toggle-library-item") {
     state.expandedExercise = state.expandedExercise === el.dataset.id ? null : el.dataset.id;
     renderLibraryResults();
@@ -1618,7 +1915,7 @@ document.addEventListener("click", (e) => {
     state.pendingAddExercise = null;
     render();
   } else if (action === "confirm-add-exercise") {
-    const session = Store.getSession(state.libraryContext);
+    const session = Store.getSession(state.libraryContext || state.libraryDraftSessionId);
     if (session) {
       const sets = Number(document.getElementById("cfg-sets").value) || 1;
       const reps = Number(document.getElementById("cfg-reps").value) || 1;
@@ -1852,21 +2149,21 @@ document.addEventListener("submit", (e) => {
   if (e.target.dataset.action === "submit-session-form") {
     e.preventDefault();
     const form = e.target;
-    const day = Number(form.dataset.day);
+    const date = form.dataset.date;
     const startTime = form.querySelector('[name="startTime"]').value;
     const duration = Number(form.querySelector('[name="duration"]').value);
     const location = form.querySelector('[name="location"]').value;
 
     const session = {
       id: uid("session"),
-      dayOfWeek: day,
+      date,
       startTime,
       duration,
       location,
       exercises: []
     };
     Store.upsertSession(session);
-    state.addingForDay = null;
+    state.addingForDate = null;
     state.view = "sessionDetail";
     state.openSessionId = session.id;
     render();
@@ -2213,6 +2510,7 @@ function finishLiveSession() {
 // ---------- init ----------
 
 async function init() {
+  migrateRecurringScheduleToCalendar();
   await Promise.all([Library.load(), FoodLibrary.load()]);
   render();
   if ("serviceWorker" in navigator) {
